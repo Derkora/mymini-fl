@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+flwr==1.7.0
+pydantic
+requests
+python-multipart
+jinja2
+aiofiles
