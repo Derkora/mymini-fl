@@ -1,19 +1,37 @@
 <!DOCTYPE html>
-<html>
+<html lang="id">
 <head>
-    <title>FL Dashboard</title>
-    <link rel="stylesheet" href="/static/dashboard.css">
+    <meta charset="UTF-8">
+    <title>Server Aggregator - FL Dashboard</title>
+    <meta http-equiv="refresh" content="3">
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <h1>Federated Learning Dashboard</h1>
+    <div class="card">
+        <h1>Federated Learning Control</h1>
+        
+        <div class="status-box {{ 'running' if status.running else 'stopped' }}">
+            Status: {{ "SEDANG TRAINING" if status.running else "BERHENTI / MENUNGGU" }} <br>
+            Ronde Saat Ini: {{ status.current_round }} / {{ status.total_rounds }}
+        </div>
 
-    <section>
-        <h2>Training Control</h2>
-        <button onclick="startTraining()">Start Training</button>
-        <button onclick="stopTraining()">Stop</button>
-        <div id="status"></div>
-    </section>
+        <div style="display: flex; justify-content: center; gap: 10px;">
+            <form action="/action/start" method="post">
+                <button type="submit" class="btn btn-start" {{ 'disabled' if status.running else '' }}>
+                    ▶ Mulai Training
+                </button>
+            </form>
 
-    <script src="/static/dashboard.js"></script>
+            <form action="/action/stop" method="post">
+                <button type="submit" class="btn btn-stop" {{ 'disabled' if not status.running else '' }}>
+                    ⏹ Hentikan
+                </button>
+            </form>
+        </div>
+        
+        <p style="margin-top: 20px; font-size: 0.9em; color: #666;">
+            *Halaman ini akan refresh otomatis setiap 3 detik.
+        </p>
+    </div>
 </body>
 </html>

@@ -2,7 +2,7 @@ services:
   server:
     build: ./server
     ports:
-      - "8081:8081"
+      - "8081:8080"
     environment:
       DATABASE_URL: postgresql://admin:admin123@server-db:5432/fl_server
     depends_on:
@@ -11,9 +11,9 @@ services:
       - flnet
 
   client1:
-    build: ./client1
+    build: ./client
     ports:
-      - "8082:8082"
+      - "8082:8080"
     environment:
       DATABASE_URL: postgresql://client:client123@client1-db:5432/fl_client
     depends_on:
@@ -22,9 +22,9 @@ services:
       - flnet
 
   client2:
-    build: ./client2
+    build: ./client
     ports:
-      - "8083:8083"
+      - "8083:8080"
     environment:
       DATABASE_URL: postgresql://client:client123@client2-db:5432/fl_client
     depends_on:
@@ -35,9 +35,9 @@ services:
   server-db:
     image: postgres:15
     environment:
-      POSTGRES_USER=admin
-      POSTGRES_PASSWORD=admin123
-      POSTGRES_DB=fl_server
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin123
+      - POSTGRES_DB=fl_server
     ports:
       - "5432:5432"
     volumes:
@@ -48,9 +48,9 @@ services:
   client1-db:
     image: postgres:15
     environment:
-      POSTGRES_USER=client
-      POSTGRES_PASSWORD=client123
-      POSTGRES_DB=fl_client
+      - POSTGRES_USER=client
+      - POSTGRES_PASSWORD=client123
+      - POSTGRES_DB=fl_client
     volumes:
       - client1_data:/var/lib/postgresql/data
     networks:
@@ -59,9 +59,9 @@ services:
   client2-db:
     image: postgres:15
     environment:
-      POSTGRES_USER=client
-      POSTGRES_PASSWORD=client123
-      POSTGRES_DB=fl_client
+      - POSTGRES_USER=client
+      - POSTGRES_PASSWORD=client123
+      - POSTGRES_DB=fl_client
     volumes:
       - client2_data:/var/lib/postgresql/data
     networks:

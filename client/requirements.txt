@@ -5,6 +5,12 @@ pydantic
 requests
 python-multipart
 jinja2
-aiofiles
 sqlalchemy
 psycopg2-binary
+cryptography
+torch
+torchvision
+torchaudio
+facenet-pytorch
+numpy
+Pillow

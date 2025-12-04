@@ -1,0 +1,16 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<h1>Form Absensi</h1>
+
+<div class="card">
+    <form action="/attendance" method="post" enctype="multipart/form-data">
+        <label>Ambil Foto / Upload Foto:</label>
+        <input type="file" name="file" required accept="image/*">
+        
+        <div style="margin-top: 20px;">
+            <button type="submit" class="btn">Kirim Absensi</button>
+        </div>
+    </form>
+</div>
+{% endblock %}

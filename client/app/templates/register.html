@@ -1,0 +1,23 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<h1>Registrasi Pengguna Baru</h1>
+<p>Silakan isi data diri dan unggah 5 foto wajah yang jelas.</p>
+
+<form action="/register" method="post" enctype="multipart/form-data" class="card">
+    <label>Nama Lengkap:</label>
+    <input type="text" name="name" required placeholder="Contoh: Budi Santoso">
+
+    <label>NIM / ID:</label>
+    <input type="text" name="nim" required placeholder="Contoh: 12345678">
+
+    <label>Upload 5 Foto Wajah (JPG/PNG):</label>
+    <input type="file" name="files" multiple required accept="image/*">
+    <small style="color: #666;">Pastikan wajah terlihat jelas dan pencahayaan cukup.</small>
+
+    <div style="margin-top: 20px;">
+        <button type="submit" class="btn">Daftar Sekarang</button>
+        <a href="/" class="btn btn-secondary">Batal</a>
+    </div>
+</form>
+{% endblock %}
