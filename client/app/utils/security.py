@@ -23,22 +23,22 @@ class EmbeddingEncryptor:
         Input: numpy array
         Output: (encrypted_bytes, iv, salt)
         """
-        # 1. Serialisasi numpy ke bytes
+        # Serialisasi numpy ke bytes
         data_bytes = pickle.dumps(embedding_numpy)
 
-        # 2. Generate IV (Initialization Vector) acak
+        # Generate IV (Initialization Vector) acak
         iv = os.urandom(16)
         salt = os.urandom(16) 
 
-        # 3. Setup AES Cipher (CBC Mode)
+        # Setup AES Cipher (CBC Mode)
         cipher = Cipher(algorithms.AES(self.key), modes.CBC(iv), backend=default_backend())
         encryptor = cipher.encryptor()
 
-        # 4. Padding (PKCS7) agar pas dengan blok AES
+        # Padding (PKCS7) agar pas dengan blok AES
         padder = padding.PKCS7(128).padder()
         padded_data = padder.update(data_bytes) + padder.finalize()
 
-        # 5. Encrypt
+        # Encrypt
         encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
 
         return encrypted_data, iv, salt

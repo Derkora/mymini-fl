@@ -8,3 +8,5 @@ jinja2
 aiofiles
 sqlalchemy
 psycopg2-binary
+torch
+numpy

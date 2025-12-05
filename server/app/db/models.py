@@ -5,8 +5,8 @@ from datetime import datetime
 
 class Client(Base):
     __tablename__ = "clients"
-    # SRS 1.1: Tabel Clients
-    edge_id = Column(String, primary_key=True) # Mengganti 'id' menjadi 'edge_id' sesuai SRS
+    # Tabel Clients
+    edge_id = Column(String, primary_key=True) 
     name = Column(String)
     ip_address = Column(String)
     status = Column(String) # online/offline
@@ -18,10 +18,10 @@ class Client(Base):
 
 class UserGlobal(Base):
     __tablename__ = "users_global"
-    # SRS 1.2: Tabel Users Global
-    user_id = Column(Integer, primary_key=True, autoincrement=True) # Mengganti 'id'
+    # Tabel Users Global
+    user_id = Column(Integer, primary_key=True, autoincrement=True) 
     name = Column(String)
-    nim = Column(String) # Tambahan NIM
+    nim = Column(String)
     registered_edge_id = Column(String, ForeignKey("clients.edge_id"))
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -29,12 +29,12 @@ class UserGlobal(Base):
 
 class AttendanceRecap(Base):
     __tablename__ = "attendance_recap"
-    # SRS 1.3: Tabel Attendance Recap
-    recap_id = Column(Integer, primary_key=True, index=True) # Mengganti 'id'
+    # Tabel Attendance Recap
+    recap_id = Column(Integer, primary_key=True, index=True) 
     user_id = Column(Integer, ForeignKey("users_global.user_id"))
-    edge_id = Column(String, ForeignKey("clients.edge_id")) # Mengganti client_id
+    edge_id = Column(String, ForeignKey("clients.edge_id")) 
     timestamp = Column(DateTime, default=datetime.utcnow)
-    confidence = Column(Float) # Tambahan sesuai SRS
+    confidence = Column(Float) 
     lecture_id = Column(String, nullable=True)
 
     user = relationship("UserGlobal", back_populates="attendance")
@@ -42,9 +42,9 @@ class AttendanceRecap(Base):
 
 class ModelVersion(Base):
     __tablename__ = "model_versions"
-    # SRS 1.4: Tabel Model Versions (PENTING untuk FL)
+    # Tabel Model Versions
     version_id = Column(Integer, primary_key=True, autoincrement=True)
-    head_blob = Column(LargeBinary) # Menyimpan bobot model (pickle/bytes)
+    head_blob = Column(LargeBinary) 
     created_at = Column(DateTime, default=datetime.utcnow)
     notes = Column(Text)
 
@@ -52,8 +52,8 @@ class ModelVersion(Base):
 
 class TrainingRound(Base):
     __tablename__ = "training_rounds"
-    # SRS 1.5: Tabel Training Rounds
-    round_id = Column(Integer, primary_key=True) # Mengganti id
+    # Tabel Training Rounds
+    round_id = Column(Integer, primary_key=True) 
     round_number = Column(Integer)
     start_time = Column(DateTime, default=datetime.utcnow)
     end_time = Column(DateTime, nullable=True)
@@ -68,7 +68,7 @@ class TrainingRound(Base):
 
 class TrainingUpdate(Base):
     __tablename__ = "training_updates"
-    # SRS 1.6: Tabel Training Updates (Log kiriman client)
+    # Tabel Training Updates (Log kiriman client)
     update_id = Column(Integer, primary_key=True)
     round_id = Column(Integer, ForeignKey("training_rounds.round_id"))
     edge_id = Column(String, ForeignKey("clients.edge_id"))

@@ -6,7 +6,8 @@ services:
     environment:
       DATABASE_URL: postgresql://admin:admin123@server-db:5432/fl_server
     depends_on:
-      - server-db
+      server-db:
+        condition: service_healthy
     networks:
       - flnet
 
@@ -17,7 +18,8 @@ services:
     environment:
       DATABASE_URL: postgresql://client:client123@client1-db:5432/fl_client
     depends_on:
-      - client1-db
+      client1-db:
+        condition: service_healthy
     networks:
       - flnet
 
@@ -28,7 +30,8 @@ services:
     environment:
       DATABASE_URL: postgresql://client:client123@client2-db:5432/fl_client
     depends_on:
-      - client2-db
+      client2-db:
+        condition: service_healthy
     networks:
       - flnet
 
@@ -44,6 +47,11 @@ services:
       - server_data:/var/lib/postgresql/data
     networks:
       - flnet
+    healthcheck:  
+      test: ["CMD-SHELL", "pg_isready -U admin -d fl_server"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     
   client1-db:
     image: postgres:15
@@ -55,6 +63,11 @@ services:
       - client1_data:/var/lib/postgresql/data
     networks:
       - flnet
+    healthcheck: 
+      test: ["CMD-SHELL", "pg_isready -U client -d fl_client"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     
   client2-db:
     image: postgres:15
@@ -66,6 +79,11 @@ services:
       - client2_data:/var/lib/postgresql/data
     networks:
       - flnet
+    healthcheck: 
+      test: ["CMD-SHELL", "pg_isready -U client -d fl_client"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
 networks:
   flnet:

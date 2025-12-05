@@ -4,22 +4,22 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import RedirectResponse
 import uvicorn
 
-# Import Controller API (tetap dipertahankan untuk akses via API jika perlu)
+from app.db.db import engine, Base
+from app.db import models
+Base.metadata.create_all(bind=engine)
+
+# Import Controller API
 from app.controllers import training_controller, client_controller, attendance_controller
 from app.server_manager_instance import fl_manager
 
 app = FastAPI(title="Federated Learning Server")
 
-# Mount Static & Templates
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
-# Include Router API (opsional, tapi bagus tetap ada)
 app.include_router(training_controller.router, prefix="/api/training", tags=["training"])
 app.include_router(client_controller.router, prefix="/api/clients", tags=["clients"])
 app.include_router(attendance_controller.router, prefix="/api/attendance", tags=["attendance"])
-
-# --- DASHBOARD ROUTES (Server-Side Rendering) ---
 
 @app.get("/")
 async def dashboard(request: Request):
@@ -34,7 +34,7 @@ async def dashboard(request: Request):
 
 @app.post("/action/start")
 async def action_start_training():
-    # Panggil logic start (misal default 10 ronde)
+    # Panggil logic start 
     fl_manager.start_training(rounds=10)
     # Redirect kembali ke halaman utama agar refresh
     return RedirectResponse(url="/", status_code=303)

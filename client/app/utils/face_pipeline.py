@@ -24,9 +24,6 @@ class FaceAnalysisPipeline:
         self.backbone = MobileFaceNet(embedding_size=128).to(self.device)
         self.backbone.eval() # Set ke mode evaluasi (Frozen Backbone)
 
-        # TODO: Load pretrained weights jika ada file .pth
-        # self.backbone.load_state_dict(torch.load("mobilefacenet.pth"))
-
     def process_image(self, image_bytes):
         """
         Menerima bytes gambar -> Return embedding (numpy)

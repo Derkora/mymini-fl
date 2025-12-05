@@ -19,17 +19,13 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="FL Edge Client - Local Mode")
 
-# 1. Mount Static & Templates
+# Mount Static & Templates
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
 encryptor = EmbeddingEncryptor()
-
-# --- Helper Check Model ---
 def is_model_ready():
     return os.path.exists("local_head.pth")
-
-# --- Routes Tampilan (GET) ---
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, db: Session = Depends(get_db)):
@@ -49,8 +45,6 @@ async def attendance_page(request: Request):
     return templates.TemplateResponse("attendance.html", {"request": request})
 
 
-# --- Routes Proses (POST) ---
-
 @app.post("/register")
 async def register_user(
     request: Request,
@@ -59,39 +53,60 @@ async def register_user(
     files: List[UploadFile] = File(...),
     db: Session = Depends(get_db)
 ):
-    # Buat User
+    # Cek dulu apakah ada wajah valid sebelum membuat user di DB
+    valid_embeddings = []
+    errors = []
+
+    for file in files:
+        content = await file.read()
+        # Reset file pointer jika perlu dibaca ulang
+        
+        emb_numpy, msg = face_pipeline.process_image(content)
+        
+        if emb_numpy is not None:
+            valid_embeddings.append(emb_numpy)
+        else:
+            print(f"[REGISTER ERROR] File {file.filename}: {msg}") 
+            errors.append(f"{file.filename}: {msg}")
+
+    # Validasi Jumlah
+    if len(valid_embeddings) == 0:
+        return templates.TemplateResponse("result.html", {
+            "request": request,
+            "status": "error",
+            "message": "Gagal Registrasi: Wajah tidak terdeteksi di semua foto.",
+            "details": {"Error Log": errors}, 
+            "next_url": "/register-page",
+            "next_label": "Coba Lagi"
+        })
+
+    # Simpan User & Embedding jika ada yang valid
     new_user = UserLocal(name=name, nim=nim)
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    
-    success_count = 0
-    
-    for file in files:
-        content = await file.read()
-        # ML Pipeline
-        emb_numpy, msg = face_pipeline.process_image(content)
-        
-        if emb_numpy is not None:
-            # Enkripsi & Simpan
-            enc_data, iv, salt = encryptor.encrypt_embedding(emb_numpy)
-            db_emb = Embedding(
-                user_id=new_user.user_id,
-                encrypted_embedding=enc_data,
-                iv=iv,
-                salt=salt
-            )
-            db.add(db_emb)
-            success_count += 1
+
+    for vec in valid_embeddings:
+        enc_data, iv, salt = encryptor.encrypt_embedding(vec)
+        db_emb = Embedding(
+            user_id=new_user.user_id,
+            encrypted_embedding=enc_data,
+            iv=iv,
+            salt=salt
+        )
+        db.add(db_emb)
             
     db.commit()
     
-    # Return ke Halaman Result
     return templates.TemplateResponse("result.html", {
         "request": request,
         "status": "registered",
         "message": f"Registrasi Berhasil untuk {name}",
-        "details": {"Foto Valid": success_count, "NIM": nim},
+        "details": {
+            "Total Upload": len(files),
+            "Foto Valid": len(valid_embeddings), 
+            "NIM": nim
+        },
         "next_url": "/register-page",
         "next_label": "Daftar Lagi"
     })

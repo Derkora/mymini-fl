@@ -56,9 +56,9 @@ Mobilefacenet_bottleneck_setting = [
     [2, 128, 2, 1]
 ]
 
-class MobileFacenet(nn.Module):
-    def __init__(self, bottleneck_setting=Mobilefacenet_bottleneck_setting):
-        super(MobileFacenet, self).__init__()
+class MobileFaceNet(nn.Module):
+    def __init__(self, bottleneck_setting=Mobilefacenet_bottleneck_setting, embedding_size=128):
+        super(MobileFaceNet, self).__init__()
 
         self.conv1 = ConvBlock(3, 64, 3, 2, 1)
         self.dw_conv1 = ConvBlock(64, 64, 3, 1, 1, dw=True)
@@ -71,7 +71,8 @@ class MobileFacenet(nn.Module):
 
         self.linear7 = ConvBlock(512, 512, (7, 7), 1, 0, dw=True, linear=True) 
 
-        self.linear1 = ConvBlock(512, 128, 1, 1, 0, linear=True)
+        # UPDATE DI SINI: Gunakan variabel embedding_size, bukan hardcode 128
+        self.linear1 = ConvBlock(512, embedding_size, 1, 1, 0, linear=True)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):

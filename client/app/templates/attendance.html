@@ -4,13 +4,143 @@
 <h1>Form Absensi</h1>
 
 <div class="card">
-    <form action="/attendance" method="post" enctype="multipart/form-data">
-        <label>Ambil Foto / Upload Foto:</label>
-        <input type="file" name="file" required accept="image/*">
+    <div style="margin-bottom: 20px; text-align: center;">
+        <button type="button" class="btn" id="btnModeCam" onclick="setMode('camera')">📸 Gunakan Kamera</button>
+        <button type="button" class="btn btn-secondary" id="btnModeUpload" onclick="setMode('upload')">📂 Upload Foto</button>
+    </div>
+
+    <form action="/attendance" method="post" enctype="multipart/form-data" id="attForm">
         
-        <div style="margin-top: 20px;">
-            <button type="submit" class="btn">Kirim Absensi</button>
+        <div id="uploadContainer" style="display:none;">
+            <label>Upload Foto Wajah:</label>
+            <input type="file" name="file" accept="image/*" id="fileInput">
+        </div>
+
+        <div id="cameraContainer" style="text-align: center;">
+            <video id="video" width="320" height="240" autoplay style="border: 1px solid #ccc; border-radius: 4px; background: #000;"></video>
+            <canvas id="canvas" width="320" height="240" style="display:none;"></canvas>
+            <br>
+            <div id="previewContainer" style="display:none; margin-top:10px;">
+                <img id="previewImg" style="max-height: 200px; border: 2px solid #28a745; border-radius: 4px;">
+                <p>Foto Terambil!</p>
+            </div>
+            
+            <div style="margin-top: 10px;">
+                <button type="button" class="btn btn-warning" id="btnCapture" onclick="capturePhoto()">Ambil Foto</button>
+                <button type="button" class="btn btn-danger" id="btnRetake" onclick="resetCamera()" style="display:none;">Ulangi</button>
+            </div>
+        </div>
+
+        <div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; text-align: right;">
+            <button type="submit" class="btn" id="btnSubmit">Kirim Absensi</button>
         </div>
     </form>
 </div>
+
+<script>
+    let mode = 'camera'; // Default kamera
+    let capturedBlob = null;
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const previewContainer = document.getElementById('previewContainer');
+    const previewImg = document.getElementById('previewImg');
+    const btnCapture = document.getElementById('btnCapture');
+    const btnRetake = document.getElementById('btnRetake');
+
+    // Inisialisasi awal
+    setMode('camera');
+
+    function setMode(newMode) {
+        mode = newMode;
+        if(mode === 'camera') {
+            document.getElementById('uploadContainer').style.display = 'none';
+            document.getElementById('cameraContainer').style.display = 'block';
+            document.getElementById('fileInput').required = false;
+            startCamera();
+        } else {
+            document.getElementById('uploadContainer').style.display = 'block';
+            document.getElementById('cameraContainer').style.display = 'none';
+            document.getElementById('fileInput').required = true;
+            stopCamera();
+        }
+    }
+
+    async function startCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            video.srcObject = stream;
+            resetCamera();
+        } catch(err) {
+            console.error("Gagal akses kamera:", err);
+            alert("Tidak bisa mengakses kamera. Beralih ke mode upload.");
+            setMode('upload');
+        }
+    }
+
+    function stopCamera() {
+        if(video.srcObject) {
+            video.srcObject.getTracks().forEach(track => track.stop());
+        }
+    }
+
+    function capturePhoto() {
+        const context = canvas.getContext('2d');
+        context.drawImage(video, 0, 0, 320, 240);
+        
+        canvas.toBlob(function(blob) {
+            capturedBlob = blob;
+            
+            // UI Update
+            video.style.display = 'none';
+            previewImg.src = URL.createObjectURL(blob);
+            previewContainer.style.display = 'block';
+            btnCapture.style.display = 'none';
+            btnRetake.style.display = 'inline-block';
+        }, 'image/jpeg');
+    }
+
+    function resetCamera() {
+        capturedBlob = null;
+        video.style.display = 'inline-block';
+        previewContainer.style.display = 'none';
+        btnCapture.style.display = 'inline-block';
+        btnRetake.style.display = 'none';
+    }
+
+    // Handle Submit
+    document.getElementById('attForm').addEventListener('submit', function(e) {
+        if(mode === 'camera') {
+            if(!capturedBlob) {
+                alert("Silakan ambil foto terlebih dahulu!");
+                e.preventDefault();
+                return;
+            }
+            
+            e.preventDefault();
+            const formData = new FormData(this);
+            // Tambahkan file blob ke form data dengan nama 'file' (sesuai main.py client)
+            formData.set('file', capturedBlob, 'attendance_capture.jpg');
+
+            const btn = document.getElementById('btnSubmit');
+            btn.innerHTML = "Memproses...";
+            btn.disabled = true;
+
+            fetch('/attendance', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.text())
+            .then(html => {
+                document.open();
+                document.write(html);
+                document.close();
+            })
+            .catch(err => {
+                alert("Error: " + err);
+                btn.innerHTML = "Kirim Absensi";
+                btn.disabled = false;
+            });
+        }
+    });
+</script>
 {% endblock %}

@@ -3,35 +3,133 @@
 <head>
     <meta charset="UTF-8">
     <title>Server Aggregator - FL Dashboard</title>
-    <meta http-equiv="refresh" content="3">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div class="card">
         <h1>Federated Learning Control</h1>
         
-        <div class="status-box {{ 'running' if status.running else 'stopped' }}">
-            Status: {{ "SEDANG TRAINING" if status.running else "BERHENTI / MENUNGGU" }} <br>
-            Ronde Saat Ini: {{ status.current_round }} / {{ status.total_rounds }}
+        <div id="statusBox" class="status-box {{ 'running' if status.running else 'stopped' }}">
+            <h3>
+                <span id="liveDot" class="live-indicator {{ 'active' if status.running else '' }}"></span>
+                Status: <span id="statusText">{{ "SEDANG TRAINING..." if status.running else "MENUNGGU / SELESAI" }}</span>
+            </h3>
+            <div style="font-size: 1.2em; margin-top: 5px;">
+                Progress Ronde: <strong id="roundText">{{ status.current_round }}</strong> / <span id="totalRoundText">{{ status.total_rounds }}</span>
+            </div>
         </div>
 
-        <div style="display: flex; justify-content: center; gap: 10px;">
-            <form action="/action/start" method="post">
-                <button type="submit" class="btn btn-start" {{ 'disabled' if status.running else '' }}>
-                    ▶ Mulai Training
-                </button>
-            </form>
+        <div class="metric-grid">
+            <div class="metric-card">
+                <div class="metric-label">Waktu Berjalan</div>
+                <div class="metric-val" id="timeText">{{ status.elapsed_time }}</div>
+            </div>
+            <div class="metric-card" style="border-left-color: #e67e22;">
+                <div class="metric-label">Est. Bandwidth</div>
+                <div class="metric-val" id="bwText">{{ status.bandwidth_mb }}</div>
+            </div>
+        </div>
 
-            <form action="/action/stop" method="post">
-                <button type="submit" class="btn btn-stop" {{ 'disabled' if not status.running else '' }}>
-                    ⏹ Hentikan
+        <div style="margin-top: 20px;" id="actionContainer">
+            {% if not status.running %}
+            <form action="/action/start" method="post">
+                <button type="submit" class="btn btn-start">
+                    ▶ Mulai Training Baru (10 Ronde)
                 </button>
             </form>
+            {% else %}
+            <p style="color: #666; font-style: italic;">
+                Training sedang berlangsung...
+            </p>
+            {% endif %}
+        </div>
+
+        <div class="card" style="margin-top: 20px; text-align: left;">
+            <h3>Status Node Client</h3>
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: #eee; text-align: left;">
+                        <th style="padding: 10px;">ID Client</th>
+                        <th style="padding: 10px;">IP Address</th>
+                        <th style="padding: 10px;">Status Aktivitas</th>
+                        <th style="padding: 10px;">Terakhir Aktif</th>
+                    </tr>
+                </thead>
+                <tbody id="clientTableBody">
+                    <tr><td colspan="4" style="padding:10px; text-align:center;">Menunggu data client...</td></tr>
+                </tbody>
+            </table>
         </div>
         
-        <p style="margin-top: 20px; font-size: 0.9em; color: #666;">
-            *Halaman ini akan refresh otomatis setiap 3 detik.
-        </p>
     </div>
+
+    <script>
+        function updateDashboard() {
+            fetch('/api/training/status')
+                .then(response => response.json())
+                .then(data => {
+                    const statusBox = document.getElementById('statusBox');
+                    const statusText = document.getElementById('statusText');
+                    const liveDot = document.getElementById('liveDot');
+                    const actionContainer = document.getElementById('actionContainer');
+    
+                    if (data.running) {
+                        statusBox.className = 'status-box running';
+                        statusText.innerText = "SEDANG TRAINING...";
+                        liveDot.className = "live-indicator active";
+                        actionContainer.innerHTML = '<p style="color: #666; font-style: italic;">Training sedang berlangsung...</p>';
+                    } else {
+                        statusBox.className = 'status-box stopped';
+                        statusText.innerText = "MENUNGGU / SELESAI";
+                        liveDot.className = "live-indicator";
+                        if (!actionContainer.querySelector('form')) {
+                            actionContainer.innerHTML = `
+                                <form action="/action/start" method="post">
+                                    <button type="submit" class="btn btn-start">▶ Mulai Training Baru (10 Ronde)</button>
+                                </form>`;
+                        }
+                    }
+    
+                    document.getElementById('roundText').innerText = data.current_round;
+                    document.getElementById('totalRoundText').innerText = data.total_rounds;
+                    document.getElementById('timeText').innerText = data.elapsed_time;
+                    document.getElementById('bwText').innerText = data.bandwidth_mb;
+    
+                    const tbody = document.getElementById('clientTableBody');
+                    tbody.innerHTML = ''; 
+    
+                    if (data.clients && data.clients.length > 0) {
+                        data.clients.forEach(client => {
+                            let statusColor = '#6c757d'; 
+                            
+                            if (client.fl_status.includes('Training')) statusColor = '#e67e22'; 
+                            if (client.fl_status.includes('Selesai')) statusColor = '#28a745';
+                            if (client.fl_status.includes('Error')) statusColor = '#dc3545'; 
+                            if (client.fl_status.includes('Online')) statusColor = '#17a2b8'; 
+    
+                            const row = `
+                                <tr style="border-bottom: 1px solid #eee;">
+                                    <td style="padding: 10px;"><strong>${client.id}</strong></td>
+                                    <td style="padding: 10px;">${client.ip_address}</td>
+                                    <td style="padding: 10px;">
+                                        <span style="background:${statusColor}; color:white; padding:3px 8px; border-radius:4px; font-size:0.9em;">
+                                            ${client.fl_status}
+                                        </span>
+                                    </td>
+                                    <td style="padding: 10px; color:#666;">${client.last_seen}</td>
+                                </tr>
+                            `;
+                            tbody.innerHTML += row;
+                        });
+                    } else {
+                        tbody.innerHTML = '<tr><td colspan="4" style="padding:10px; text-align:center;">Belum ada client yang melapor.</td></tr>';
+                    }
+                })
+                .catch(err => console.error("Gagal update:", err));
+        }
+    
+        // Update setiap 1 detik
+        setInterval(updateDashboard, 1000);
+    </script>
 </body>
 </html>
