@@ -16,7 +16,9 @@ def create_initial_head():
     print("[INIT] Membuat inisialisasi Classifier Head")
     
     # Buat model head sederhana (Linear Layer)
-    model = nn.Linear(128, 10)
+    MAX_USERS = 100
+    
+    model = nn.Linear(128, MAX_USERS)
     
     # Ambil state_dict (bobot & bias)
     weights = model.state_dict()

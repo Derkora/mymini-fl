@@ -6,6 +6,9 @@ from sqlalchemy.orm import Session
 from app.db.models import UserLocal, Embedding
 from app.utils.security import EmbeddingEncryptor
 from app.utils.classifier import SimpleClassifier, save_head
+import requests
+
+SERVER_URL = "http://server:8080"
 
 class LocalTrainer:
     def __init__(self, db: Session):
@@ -13,13 +16,27 @@ class LocalTrainer:
         self.encryptor = EmbeddingEncryptor()
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    def _fetch_global_label(self, nim): 
+        try:
+            resp = requests.post(f"{SERVER_URL}/api/training/get_label", json={"nim": nim}, timeout=2)
+            if resp.status_code == 200:
+                return resp.json()["label"]
+        except:
+            return None
+        return None
+    
     def train_local(self, epochs=20, lr=0.01):
-        # Ambil semua user dan embedding mereka dari DB
         users = self.db.query(UserLocal).all()
         if not users:
-            return {"status": "error", "reason": "No users found in DB"}
+            return {"status": "error", "reason": "No users found"}
 
-        user_map = {u.user_id: idx for idx, u in enumerate(users)}
+        user_map = {}
+        for u in users:
+            lbl = self._fetch_global_label(u.nim)
+            if lbl is not None:
+                user_map[u.user_id] = lbl
+            else:
+                print(f"[TRAIN LOCAL] Gagal sync label untuk {u.name}, skip.")
         
         X_train = [] # Data Embedding
         y_train = [] # Label (0, 1, 2...)
@@ -29,7 +46,7 @@ class LocalTrainer:
         
         count_used = 0
         for emb in embeddings:
-            # Pastikan user_id ada di map (cegah error jika ada data yatim piatu)
+            # Pastikan user_id ada di map
             if emb.user_id not in user_map: 
                 continue 
             
@@ -53,7 +70,7 @@ class LocalTrainer:
 
         # Setup Model
         num_users = len(users)
-        model = SimpleClassifier(num_classes=10).to(self.device)
+        model = SimpleClassifier(num_classes=100).to(self.device)
         model.train()
         
         criterion = nn.CrossEntropyLoss()

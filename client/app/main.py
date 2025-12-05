@@ -1,4 +1,5 @@
 import os
+import threading
 from fastapi import FastAPI, UploadFile, File, Form, Depends, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -6,6 +7,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from typing import List
 import torch
+import numpy as np
 
 from app.db.db import get_db, engine, Base
 from app.db.models import UserLocal, Embedding, AttendanceLocal
@@ -14,11 +16,21 @@ from app.utils.security import EmbeddingEncryptor
 from app.utils.classifier import load_head
 from app.utils.trainer import LocalTrainer
 
+from app.client import start_flower_client, get_global_label, sync_users_from_server
+MAX_USERS_CAPACITY = 100
+
 # Init DB Tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="FL Edge Client - Local Mode")
 
+@app.on_event("startup")
+def startup_event():
+    thread = threading.Thread(target=start_flower_client, daemon=True)
+    thread.start()
+    sync_thread = threading.Thread(target=sync_users_from_server, daemon=True)
+    sync_thread.start()
+    
 # Mount Static & Templates
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
@@ -45,6 +57,8 @@ async def attendance_page(request: Request):
     return templates.TemplateResponse("attendance.html", {"request": request})
 
 
+# client/app/main.py
+
 @app.post("/register")
 async def register_user(
     request: Request,
@@ -53,23 +67,20 @@ async def register_user(
     files: List[UploadFile] = File(...),
     db: Session = Depends(get_db)
 ):
-    # Cek dulu apakah ada wajah valid sebelum membuat user di DB
     valid_embeddings = []
     errors = []
 
     for file in files:
         content = await file.read()
-        # Reset file pointer jika perlu dibaca ulang
         
-        emb_numpy, msg = face_pipeline.process_image(content)
+        embeddings_list, msg = face_pipeline.process_with_augmentation(content)
         
-        if emb_numpy is not None:
-            valid_embeddings.append(emb_numpy)
+        if embeddings_list:
+            valid_embeddings.extend(embeddings_list)
         else:
             print(f"[REGISTER ERROR] File {file.filename}: {msg}") 
             errors.append(f"{file.filename}: {msg}")
 
-    # Validasi Jumlah
     if len(valid_embeddings) == 0:
         return templates.TemplateResponse("result.html", {
             "request": request,
@@ -79,12 +90,28 @@ async def register_user(
             "next_url": "/register-page",
             "next_label": "Coba Lagi"
         })
+    
+    lbl = get_global_label(nim, name)
+    
+    if lbl is None:
+        return templates.TemplateResponse("result.html", {
+            "request": request,
+            "status": "error",
+            "message": "Gagal menghubungi Server Pusat untuk sinkronisasi Label.",
+            "next_url": "/register-page",
+            "next_label": "Coba Lagi Nanti"
+        })
 
-    # Simpan User & Embedding jika ada yang valid
-    new_user = UserLocal(name=name, nim=nim)
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+    existing_user = db.query(UserLocal).filter(UserLocal.nim == nim).first()
+    
+    if existing_user:
+        new_user = existing_user
+        print(f"[REGISTER] User {name} sudah ada, menambahkan data wajah baru.")
+    else:
+        new_user = UserLocal(name=name, nim=nim)
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
 
     for vec in valid_embeddings:
         enc_data, iv, salt = encryptor.encrypt_embedding(vec)
@@ -103,8 +130,8 @@ async def register_user(
         "status": "registered",
         "message": f"Registrasi Berhasil untuk {name}",
         "details": {
-            "Total Upload": len(files),
-            "Foto Valid": len(valid_embeddings), 
+            "Global Label ID": lbl,
+            "Total Sampel Wajah": len(valid_embeddings), 
             "NIM": nim
         },
         "next_url": "/register-page",
@@ -139,8 +166,7 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
             "next_label": "Ke Dashboard"
         })
 
-    # Load Model
-    model = load_head("local_head.pth", num_classes=10)
+    model = load_head("local_head.pth", num_classes=MAX_USERS_CAPACITY) 
     model.eval()
     
     # Proses Image
@@ -151,31 +177,74 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
         return templates.TemplateResponse("result.html", {
             "request": request,
             "status": "error",
-            "message": f"Wajah tidak terdeteksi: {msg}"
+            "message": f"Wajah tidak terdeteksi: {msg}",
+            "next_url": "/attendance-page",
+            "next_label": "Coba Lagi"
         })
 
     # Inferensi
     emb_tensor = torch.tensor(emb_numpy, dtype=torch.float32).unsqueeze(0)
-    
     with torch.no_grad():
         outputs = model(emb_tensor)
         probs = torch.nn.functional.softmax(outputs, dim=1)
         confidence, predicted_class = torch.max(probs, 1)
         
     class_idx = predicted_class.item()
-    conf_score = confidence.item()
-
-    # Cari Nama User
-    users = db.query(UserLocal).all()
-    user_map = {idx: u for idx, u in enumerate(users)}
-    matched_user = user_map.get(class_idx)
+    softmax_score = confidence.item()
     
-    # Threshold Logic
-    if matched_user and conf_score > 0.5: # Ambang batas
-        # Simpan Log Absensi
+    # Ambil semua user lokal
+    users = db.query(UserLocal).all()
+    matched_user = None
+    
+    for user in users:
+        lbl = get_global_label(user.nim) 
+        if lbl == class_idx:
+            matched_user = user
+            break
+    
+    if not matched_user:
+        return templates.TemplateResponse("result.html", {
+            "request": request,
+            "status": "unknown",
+            "message": "Wajah terdeteksi, tapi data user belum tersinkronisasi.",
+            "next_url": "/attendance-page",
+            "next_label": "Coba Lagi"
+        })
+    
+    stored_embeddings = db.query(Embedding).filter(Embedding.user_id == matched_user.user_id).all()
+    
+    max_similarity = -1.0
+    
+    if not stored_embeddings:
+        print("[ATTENDANCE] User ditemukan tapi tidak punya sampel wajah untuk verifikasi.")
+        final_score = softmax_score
+    else:
+        for db_emb in stored_embeddings:
+            try:
+                # Decrypt vektor dari DB
+                vec_stored = encryptor.decrypt_embedding(db_emb.encrypted_embedding, db_emb.iv)
+                
+                # Hitung Cosine Similarity
+                # Rumus: A . B
+                sim = np.dot(emb_numpy, vec_stored)
+                
+                if sim > max_similarity:
+                    max_similarity = sim
+            except Exception as e:
+                print(f"[VERIFY ERROR] Gagal decrypt sample: {e}")
+                continue
+        
+        final_score = float(max_similarity)
+    
+    THRESHOLD = 0.50 
+    
+    print(f"[ATTENDANCE] Kandidat: {matched_user.name} | Softmax: {softmax_score:.2f} | Cosine Sim: {final_score:.2f}")
+
+    if final_score > THRESHOLD:
+        # REKAM LOG
         log = AttendanceLocal(
             user_id=matched_user.user_id,
-            confidence=conf_score,
+            confidence=final_score,
             sent_to_server=False
         )
         db.add(log)
@@ -186,18 +255,26 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
             "status": "success",
             "message": f"Halo, {matched_user.name}!",
             "details": {
-                "Confidence": f"{conf_score:.2%}",
+                "Metode Verifikasi": "Biometric Match (Cosine)",
+                "Skor Kemiripan": f"{final_score:.2f} / 1.0",
                 "Waktu": "Baru Saja"
             },
             "next_url": "/attendance-page",
             "next_label": "Absen Lagi"
         })
     else:
+        msg = "Wajah tidak terverifikasi."
+        if final_score > 0.3:
+            msg = "Wajah agak mirip, tapi kurang meyakinkan. Coba lepas kacamata/masker."
+            
         return templates.TemplateResponse("result.html", {
             "request": request,
             "status": "unknown",
-            "message": "Maaf, wajah Anda tidak dikenali.",
-            "details": {"Confidence Tertinggi": f"{conf_score:.2%}"},
+            "message": f"Maaf, {msg}",
+            "details": {
+                "Kandidat Terdekat": matched_user.name,
+                "Skor Kemiripan": f"{final_score:.2f} (Butuh > {THRESHOLD})",
+            },
             "next_url": "/attendance-page",
             "next_label": "Coba Lagi"
         })

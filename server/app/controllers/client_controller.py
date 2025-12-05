@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
-from typing import List
+from typing import Optional, Dict, Any
 
 router = APIRouter()
 
@@ -8,8 +8,8 @@ class ClientStatus(BaseModel):
     id: str
     ip_address: str
     fl_status: str       
-    last_seen: str       
-
+    last_seen: str 
+    metrics: Optional[Dict[str, Any]] = None    
 
 # Simulasi database sementara
 registered_clients = {}  
