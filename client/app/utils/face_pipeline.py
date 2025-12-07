@@ -4,7 +4,8 @@ from PIL import Image
 from facenet_pytorch import MTCNN
 from .mobilefacenet import MobileFaceNet
 import io
-import torchvision.transforms as T # <--- TAMBAHAN
+import torchvision.transforms as T
+import cv2
 
 class FaceAnalysisPipeline:
     def __init__(self):
@@ -27,25 +28,45 @@ class FaceAnalysisPipeline:
 
         # AUGMENTASI
         self.transforms = [
-            # Flip Horizontal (Efek Cermin)
             T.RandomHorizontalFlip(p=1.0),
-            
-            # Perubahan Pencahayaan (Brightness & Contrast)
             T.ColorJitter(brightness=0.3, contrast=0.3),
-            
-            # Rotasi Sedikit (+/- 10 derajat) untuk toleransi miring kepala
             T.RandomRotation(degrees=10),
-            
-            # Kombinasi Flip + Color
             T.Compose([
                 T.RandomHorizontalFlip(p=1.0),
                 T.ColorJitter(brightness=0.2, contrast=0.2)
             ])
         ]
 
-    def _get_embedding(self, img_pil):
-        """Helper internal untuk ekstrak embedding dari objek PIL Image"""
+    def _check_quality(self, img_pil):
+        """Cek apakah gambar buram atau terlalu gelap/terang"""
         try:
+            # Konversi PIL ke OpenCV format (numpy)
+            img_np = np.array(img_pil)
+            gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+            
+            # 1. Blur Detection (Variance of Laplacian)
+            blur_score = cv2.Laplacian(gray, cv2.CV_64F).var()
+            if blur_score < 100: # Threshold umum, bisa disesuaikan
+                return False, f"Blurry (Score: {blur_score:.1f})"
+                
+            # 2. Brightness Check
+            mean_brightness = np.mean(gray)
+            if mean_brightness < 40:
+                return False, "Too Dark"
+            if mean_brightness > 220:
+                return False, "Too Bright"
+                
+            return True, "OK"
+        except Exception as e:
+            return True, "Quality Check Skip" # Lanjut jika error library
+
+    def _get_embedding(self, img_pil):
+        try:
+            # [BARU] Cek Kualitas Sebelum Proses
+            is_good, msg = self._check_quality(img_pil)
+            if not is_good:
+                return None, f"Quality Reject: {msg}"
+
             face_tensor, prob = self.mtcnn(img_pil, return_prob=True)
             
             if face_tensor is None:
@@ -69,31 +90,31 @@ class FaceAnalysisPipeline:
             return None, str(e)
 
     def process_image(self, image_bytes):
-        """Metode Legacy (Single Image)"""
-        img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-        return self._get_embedding(img)
+        try:
+            img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+            return self._get_embedding(img)
+        except Exception as e:
+            return None, str(e)
 
     def process_with_augmentation(self, image_bytes):
-        """
-        Metode Baru: Menghasilkan BANYAK embedding dari 1 foto.
-        Return: List of valid embeddings (numpy arrays)
-        """
         valid_embeddings = []
+        try:
+            original_img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+        except Exception as e:
+            return [], f"File Error: {e}"
         
-        original_img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-        
+        # Proses Asli
         emb, msg = self._get_embedding(original_img)
         if emb is not None:
             valid_embeddings.append(emb)
         else:
             return [], f"Original Fail: {msg}"
 
+        # Proses Augmentasi
         for i, transform in enumerate(self.transforms):
             try:
                 aug_img = transform(original_img)
-                
                 aug_emb, aug_msg = self._get_embedding(aug_img)
-                
                 if aug_emb is not None:
                     valid_embeddings.append(aug_emb)
             except Exception as e:

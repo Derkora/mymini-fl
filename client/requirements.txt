@@ -14,3 +14,7 @@ torchaudio
 facenet-pytorch
 numpy
 Pillow
+opencv-python-headless
+scikit-learn
+matplotlib
+seaborn

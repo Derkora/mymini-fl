@@ -5,8 +5,20 @@ import io
 import time
 from app.db.db import SessionLocal
 from app.db.models import ModelVersion
-from flwr.common import ndarrays_to_parameters
+from typing import List, Tuple
+from flwr.common import Metrics, ndarrays_to_parameters
 
+def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
+    # Agregasi metrik (accuracy & loss) berdasarkan jumlah data (num_examples)
+    accuracies = [num_examples * m["accuracy"] for num_examples, m in metrics]
+    losses = [num_examples * m["loss"] for num_examples, m in metrics]
+    examples = [num_examples for num_examples, _ in metrics]
+    
+    return {
+        "accuracy": sum(accuracies) / sum(examples),
+        "loss": sum(losses) / sum(examples),
+    }
+    
 class FLServerManager:
     def __init__(self):
         self.running = False
@@ -75,11 +87,13 @@ class FLServerManager:
 
             strategy = fl.server.strategy.FedAvg(
                 fraction_fit=1.0,
-                fraction_evaluate=0.0,
+                fraction_evaluate=1.0,
                 min_fit_clients=self.clients_per_round,
                 min_available_clients=self.clients_per_round,
                 on_fit_config_fn=fit_config,
-                initial_parameters=initial_params
+                initial_parameters=initial_params,
+                fit_metrics_aggregation_fn=weighted_average,
+                evaluate_metrics_aggregation_fn=weighted_average
             )
 
             fl.server.start_server(

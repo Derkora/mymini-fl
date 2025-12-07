@@ -6,6 +6,8 @@ import uvicorn
 
 from app.db.db import engine, Base
 from app.db import models
+from app.utils.init import create_initial_head
+
 Base.metadata.create_all(bind=engine)
 
 # Import Controller API
@@ -14,6 +16,11 @@ from app.server_manager_instance import fl_manager
 
 app = FastAPI(title="Federated Learning Server")
 
+@app.on_event("startup")
+def on_startup():
+    print("[MAIN] Menjalankan pengecekan inisialisasi model...")
+    create_initial_head()
+    
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
