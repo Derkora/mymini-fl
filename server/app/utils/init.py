@@ -6,24 +6,24 @@ import io
 import sys
 import os
 
-# Tambahkan parent dir ke path agar bisa import app.db
+from .mobilefacenet import MobileFaceNet
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 
 from app.db.db import SessionLocal
 from app.db.models import ModelVersion
 
 def create_initial_head():
-    print("[INIT] Membuat inisialisasi Classifier Head")
+    print("[INIT] Membuat inisialisasi MobileFaceNet Backbone (Global Model)")
     
-    # Buat model head sederhana (Linear Layer)
-    MAX_USERS = 100
+    # Inisialisasi MobileFaceNet (Backbone)
+    # Model MobileFaceNet sudah diimpor secara lokal
+    model = MobileFaceNet(embedding_size=128) 
     
-    model = nn.Linear(128, MAX_USERS)
-    
-    # Ambil state_dict (bobot & bias)
+    # Ambil state_dict (bobot & bias) dari MobileFaceNet
     weights = model.state_dict()
     
-    # Serialisasi ke bytes (Pickle)
+    # Serialisasi ke bytes
     buffer = io.BytesIO()
     torch.save(weights, buffer)
     blob = buffer.getvalue()
@@ -38,12 +38,12 @@ def create_initial_head():
             return
 
         new_version = ModelVersion(
-            head_blob=blob,
-            notes="Initial Random Head (Version 0)"
+            head_blob=blob, 
+            notes="Initial Random MobileFaceNet Backbone (Version 0)"
         )
         db.add(new_version)
         db.commit()
-        print(f"[INIT] Berhasil menyimpan Head Version 0 ({len(blob)} bytes) ke Database.")
+        print(f"[INIT] Berhasil menyimpan Backbone Version 0 ({len(blob)} bytes) ke Database.")
     except Exception as e:
         print(f"[ERROR] Gagal menyimpan ke DB: {e}")
         db.rollback()

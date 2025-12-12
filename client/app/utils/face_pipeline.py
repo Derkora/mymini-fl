@@ -6,6 +6,7 @@ from .mobilefacenet import MobileFaceNet
 import io
 import torchvision.transforms as T
 import cv2
+import random
 
 class FaceAnalysisPipeline:
     def __init__(self):
@@ -18,24 +19,39 @@ class FaceAnalysisPipeline:
             min_face_size=20,
             thresholds=[0.6, 0.7, 0.7],
             factor=0.709,
-            post_process=True,
+            post_process=True, 
             device=self.device
         )
         
         print("[PIPELINE] Loading MobileFaceNet Backbone...")
         self.backbone = MobileFaceNet(embedding_size=128).to(self.device)
         self.backbone.eval()
-
-        # AUGMENTASI
+        # AUGMENTASI 
         self.transforms = [
             T.RandomHorizontalFlip(p=1.0),
             T.ColorJitter(brightness=0.3, contrast=0.3),
             T.RandomRotation(degrees=10),
+            # Simulasi Random Crop dengan resize kembali ke 112x112 
             T.Compose([
-                T.RandomHorizontalFlip(p=1.0),
+                T.Resize(int(112 * 1.1)), # Zoom in
+                T.RandomCrop(112),
+            ]),
+            T.Compose([ # Kombinasi untuk variasi
+                T.RandomHorizontalFlip(p=0.5),
                 T.ColorJitter(brightness=0.2, contrast=0.2)
             ])
         ]
+        
+    def _add_random_noise(self, img_pil):
+        """Menambahkan Gaussian Noise (simulasi random noise)"""
+        img_np = np.array(img_pil).astype(np.float32) / 255.0
+        mean = 0.0
+        stddev = random.uniform(0.01, 0.05) # Noise level
+        noise = np.random.normal(mean, stddev, img_np.shape)
+        noisy_img_np = img_np + noise
+        noisy_img_np = np.clip(noisy_img_np, 0.0, 1.0)
+        return Image.fromarray((noisy_img_np * 255).astype(np.uint8))
+
 
     def _check_quality(self, img_pil):
         """Cek apakah gambar buram atau terlalu gelap/terang"""
@@ -58,11 +74,10 @@ class FaceAnalysisPipeline:
                 
             return True, "OK"
         except Exception as e:
-            return True, "Quality Check Skip" # Lanjut jika error library
+            return True, "Quality Check Skip" 
 
     def _get_embedding(self, img_pil):
         try:
-            # [BARU] Cek Kualitas Sebelum Proses
             is_good, msg = self._check_quality(img_pil)
             if not is_good:
                 return None, f"Quality Reject: {msg}"
@@ -114,6 +129,10 @@ class FaceAnalysisPipeline:
         for i, transform in enumerate(self.transforms):
             try:
                 aug_img = transform(original_img)
+                # Jika transformasi noise 
+                if i == 3: 
+                    aug_img = self._add_random_noise(aug_img)
+                    
                 aug_emb, aug_msg = self._get_embedding(aug_img)
                 if aug_emb is not None:
                     valid_embeddings.append(aug_emb)

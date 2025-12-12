@@ -8,6 +8,8 @@ from app.db.models import ModelVersion
 from typing import List, Tuple
 from flwr.common import Metrics, ndarrays_to_parameters
 
+from app.utils.mobilefacenet import MobileFaceNet
+
 def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
     # Agregasi metrik (accuracy & loss) berdasarkan jumlah data (num_examples)
     accuracies = [num_examples * m["accuracy"] for num_examples, m in metrics]
@@ -43,7 +45,11 @@ class FLServerManager:
                 print(f"[FL SERVER] Model Size Loaded: {self.model_size_bytes} bytes")
 
                 buffer = io.BytesIO(latest_model.head_blob)
+                
+                # Load MobileFaceNet Architecture 
+                backbone = MobileFaceNet(embedding_size=128) # Menggunakan MobileFaceNet yang sudah diimport
                 state_dict = torch.load(buffer)
+                
                 params = [val.cpu().numpy() for _, val in state_dict.items()]
                 return ndarrays_to_parameters(params)
             else:

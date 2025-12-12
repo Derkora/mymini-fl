@@ -5,10 +5,11 @@ import numpy as np
 from sqlalchemy.orm import Session
 from app.db.models import UserLocal, Embedding
 from app.utils.security import EmbeddingEncryptor
-from app.utils.classifier import SimpleClassifier, save_head
+from app.utils.classifier import load_backbone, save_backbone, LocalClassifierHead # Import yang diubah
 import requests
 
 SERVER_URL = "http://server:8080"
+MAX_USERS_CAPACITY = 100
 
 class LocalTrainer:
     def __init__(self, db: Session):
@@ -41,17 +42,14 @@ class LocalTrainer:
         X_train = [] # Data Embedding
         y_train = [] # Label (0, 1, 2...)
 
-        # Decrypt & Prepare Dataset
         embeddings = self.db.query(Embedding).all()
         
         count_used = 0
         for emb in embeddings:
-            # Pastikan user_id ada di map
             if emb.user_id not in user_map: 
                 continue 
             
             try:
-                # Decrypt dari DB
                 vec_numpy = self.encryptor.decrypt_embedding(emb.encrypted_embedding, emb.iv)
                 
                 X_train.append(vec_numpy)
@@ -64,24 +62,32 @@ class LocalTrainer:
         if not X_train:
             return {"status": "error", "reason": "No valid embeddings found"}
 
-        # Convert ke Tensor
         X_tensor = torch.tensor(np.array(X_train), dtype=torch.float32).to(self.device)
         y_tensor = torch.tensor(y_train, dtype=torch.long).to(self.device)
 
-        # Setup Model
-        num_users = len(users)
-        model = SimpleClassifier(num_classes=100).to(self.device)
-        model.train()
+        # Setup Model: Load Backbone dan buat Head Lokal
+        backbone = load_backbone(path="local_backbone.pth", embedding_size=128).to(self.device)
+        head = LocalClassifierHead(num_classes=MAX_USERS_CAPACITY).to(self.device)
+        
+        backbone.train()
+        head.train()
+        
+        # Gabungkan parameter untuk dioptimasi
+        all_params = list(backbone.parameters()) + list(head.parameters())
         
         criterion = nn.CrossEntropyLoss()
-        optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+        optimizer = optim.SGD(all_params, lr=lr, momentum=0.9)
 
         # Training Loop
-        print(f"[TRAIN] Start training on {count_used} images for {num_users} users...")
+        print(f"[TRAIN] Start training on {count_used} images for {len(user_map)} users...")
         final_loss = 0.0
         for epoch in range(epochs):
             optimizer.zero_grad()
-            outputs = model(X_tensor)
+            # Ekstraksi embedding menggunakan backbone
+            embeddings = backbone(X_tensor) 
+            # Klasifikasi menggunakan head lokal
+            outputs = head(embeddings) 
+            
             loss = criterion(outputs, y_tensor)
             loss.backward()
             optimizer.step()
@@ -90,12 +96,13 @@ class LocalTrainer:
             if epoch % 5 == 0:
                 print(f"Epoch {epoch}: Loss {final_loss:.4f}")
 
-        # Save Model Lokal
-        save_head(model, path="local_head.pth")
+        # Save Model Backbone Lokal 
+        save_backbone(backbone, path="local_backbone.pth")
         
         return {
             "status": "success", 
-            "users_count": num_users, 
+            "users_count": len(user_map), 
             "samples": count_used,
-            "final_loss": final_loss
+            "final_loss": final_loss,
+            "saved_model": "local_backbone.pth"
         }

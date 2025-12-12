@@ -13,10 +13,12 @@ from app.db.db import get_db, engine, Base
 from app.db.models import UserLocal, Embedding, AttendanceLocal
 from app.utils.face_pipeline import face_pipeline
 from app.utils.security import EmbeddingEncryptor
-from app.utils.classifier import load_head
+from app.utils.classifier import load_backbone, LocalClassifierHead, build_local_model
 from app.utils.trainer import LocalTrainer
 
 from app.client import start_flower_client, get_global_label, sync_users_from_server
+
+CLIENT_ID = os.getenv("HOSTNAME", "client-unknown")
 MAX_USERS_CAPACITY = 100
 
 # Init DB Tables
@@ -37,7 +39,7 @@ templates = Jinja2Templates(directory="app/templates")
 
 encryptor = EmbeddingEncryptor()
 def is_model_ready():
-    return os.path.exists("local_head.pth")
+    return os.path.exists("local_backbone.pth")
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, db: Session = Depends(get_db)):
@@ -56,9 +58,6 @@ async def register_page(request: Request):
 async def attendance_page(request: Request):
     return templates.TemplateResponse("attendance.html", {"request": request})
 
-
-# client/app/main.py
-
 @app.post("/register")
 async def register_user(
     request: Request,
@@ -73,6 +72,7 @@ async def register_user(
     for file in files:
         content = await file.read()
         
+        # Menggunakan proses_with_augmentation (Preprocessing & Augmentasi)
         embeddings_list, msg = face_pipeline.process_with_augmentation(content)
         
         if embeddings_list:
@@ -91,15 +91,25 @@ async def register_user(
             "next_label": "Coba Lagi"
         })
     
-    lbl = get_global_label(nim, name)
+    lbl_data = get_global_label(nim, name, client_id=CLIENT_ID) 
     
-    if lbl is None:
+    if lbl_data is None:
         return templates.TemplateResponse("result.html", {
             "request": request,
             "status": "error",
-            "message": "Gagal menghubungi Server Pusat untuk sinkronisasi Label.",
+            "message": "Gagal menghubungi Server Pusat untuk sinkronisasi Label atau Server Penuh.",
             "next_url": "/register-page",
             "next_label": "Coba Lagi Nanti"
+        })
+        
+    # PERUBAHAN: Lakukan pengecekan pembatasan perangkat
+    if lbl_data.get("registered_edge_id") and lbl_data.get("registered_edge_id") != CLIENT_ID:
+        return templates.TemplateResponse("result.html", {
+            "request": request,
+            "status": "error",
+            "message": f"Registrasi Gagal: NIM {nim} sudah terdaftar di perangkat lain ({lbl_data.get('registered_edge_id')}).",
+            "next_url": "/register-page",
+            "next_label": "Coba Lagi"
         })
 
     existing_user = db.query(UserLocal).filter(UserLocal.nim == nim).first()
@@ -114,6 +124,7 @@ async def register_user(
         db.refresh(new_user)
 
     for vec in valid_embeddings:
+        # Enkripsi Embedding (AES-256)
         enc_data, iv, salt = encryptor.encrypt_embedding(vec)
         db_emb = Embedding(
             user_id=new_user.user_id,
@@ -130,9 +141,10 @@ async def register_user(
         "status": "registered",
         "message": f"Registrasi Berhasil untuk {name}",
         "details": {
-            "Global Label ID": lbl,
+            "Global Label ID": lbl_data.get("label"),
             "Total Sampel Wajah": len(valid_embeddings), 
-            "NIM": nim
+            "NIM": nim,
+            "Registered on": CLIENT_ID
         },
         "next_url": "/register-page",
         "next_label": "Daftar Lagi"
@@ -140,11 +152,12 @@ async def register_user(
 
 @app.post("/train")
 async def trigger_training(request: Request, db: Session = Depends(get_db)):
+    # LocalTrainer sudah diubah untuk melatih Backbone + Head
     trainer = LocalTrainer(db)
     result = trainer.train_local()
     
     status = "success" if result.get("status") == "success" else "error"
-    msg = "Model Lokal Berhasil Dilatih!" if status == "success" else f"Gagal: {result}"
+    msg = "Model Backbone Lokal Berhasil Dilatih!" if status == "success" else f"Gagal: {result}"
     
     return templates.TemplateResponse("result.html", {
         "request": request,
@@ -166,8 +179,10 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
             "next_label": "Ke Dashboard"
         })
 
-    model = load_head("local_head.pth", num_classes=MAX_USERS_CAPACITY) 
-    model.eval()
+    # Load Backbone dan buat Head Lokal (Head hanya untuk inferensi klasifikasi)
+    backbone, model_head = build_local_model(num_classes=MAX_USERS_CAPACITY, backbone_path="local_backbone.pth")
+    backbone.eval()
+    model_head.eval()
     
     # Proses Image
     content = await file.read()
@@ -182,10 +197,14 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
             "next_label": "Coba Lagi"
         })
 
-    # Inferensi
+    # Inferensi (Backbone)
     emb_tensor = torch.tensor(emb_numpy, dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
-        outputs = model(emb_tensor)
+        # Ekstraksi embedding dari MobileFaceNet
+        embeddings = backbone(emb_tensor)
+        
+        # Klasifikasi 
+        outputs = model_head(embeddings)
         probs = torch.nn.functional.softmax(outputs, dim=1)
         confidence, predicted_class = torch.max(probs, 1)
         
@@ -196,9 +215,10 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
     users = db.query(UserLocal).all()
     matched_user = None
     
+    # Cari user lokal yang label global-nya cocok dengan hasil klasifikasi
     for user in users:
-        lbl = get_global_label(user.nim) 
-        if lbl == class_idx:
+        lbl_data = get_global_label(user.nim, client_id=CLIENT_ID) # Ambil label global lagi
+        if lbl_data and lbl_data.get("label") == class_idx:
             matched_user = user
             break
     
@@ -206,11 +226,12 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
         return templates.TemplateResponse("result.html", {
             "request": request,
             "status": "unknown",
-            "message": "Wajah terdeteksi, tapi data user belum tersinkronisasi.",
+            "message": "Wajah terdeteksi, tapi data user (label) belum tersinkronisasi.",
             "next_url": "/attendance-page",
             "next_label": "Coba Lagi"
         })
     
+    # Metrik final untuk absensi (TAR/FAR/EER)
     stored_embeddings = db.query(Embedding).filter(Embedding.user_id == matched_user.user_id).all()
     
     max_similarity = -1.0
@@ -224,8 +245,7 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
                 # Decrypt vektor dari DB
                 vec_stored = encryptor.decrypt_embedding(db_emb.encrypted_embedding, db_emb.iv)
                 
-                # Hitung Cosine Similarity
-                # Rumus: A . B
+                # Hitung Cosine Similarity 
                 sim = np.dot(emb_numpy, vec_stored)
                 
                 if sim > max_similarity:

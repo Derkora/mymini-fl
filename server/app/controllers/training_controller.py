@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from typing import Optional # Import Optional
 from app.server_manager_instance import fl_manager
 from app.controllers.client_controller import registered_clients
 
@@ -10,6 +11,7 @@ global_user_db = {}
 class LabelRequest(BaseModel):
     nim: str
     name: str = ""
+    registered_edge_id: Optional[str] = None 
 
 @router.post("/get_label")
 def get_or_create_label(req: LabelRequest):
@@ -20,14 +22,21 @@ def get_or_create_label(req: LabelRequest):
         if new_label >= 100: 
             raise HTTPException(status_code=400, detail="Full")
             
-        # SIMPAN NAMA JUGA
         global_user_db[req.nim] = {
             "label": new_label,
             "name": req.name,
-            "nim": req.nim
+            "nim": req.nim,
+            # Simpan Edge ID saat registrasi pertama
+            "registered_edge_id": req.registered_edge_id 
         }
-        print(f"[REGISTRY] New: {req.name} ({req.nim}) -> Label {new_label}")
+        print(f"[REGISTRY] New: {req.name} ({req.nim}) -> Label {new_label} on {req.registered_edge_id}")
         
+    else:
+        print(f"[REGISTRY] Existing: {req.name} ({req.nim}) -> Label {global_user_db[req.nim]['label']} on {req.registered_edge_id}")
+        existing_data = global_user_db[req.nim]
+        if existing_data.get("registered_edge_id") and existing_data.get("registered_edge_id") != req.registered_edge_id and req.registered_edge_id:
+             raise HTTPException(status_code=403, detail=f"User already registered on {existing_data.get('registered_edge_id')}")
+
     return global_user_db[req.nim]
 
 @router.get("/global_users")
