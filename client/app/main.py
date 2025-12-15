@@ -68,12 +68,15 @@ async def register_user(
 ):
     valid_embeddings = []
     errors = []
+    # Log untuk debug visual
+    registration_logs = []
 
     for file in files:
         content = await file.read()
         
-        # Menggunakan proses_with_augmentation (Preprocessing & Augmentasi)
-        embeddings_list, msg = face_pipeline.process_with_augmentation(content)
+        # PERUBAHAN: Sekarang mengembalikan embeddings, pesan, dan log debug
+        embeddings_list, msg, file_debug_logs = face_pipeline.process_with_augmentation(content, filename=file.filename)
+        registration_logs.extend(file_debug_logs)
         
         if embeddings_list:
             valid_embeddings.extend(embeddings_list)
@@ -85,8 +88,9 @@ async def register_user(
         return templates.TemplateResponse("result.html", {
             "request": request,
             "status": "error",
-            "message": "Gagal Registrasi: Wajah tidak terdeteksi di semua foto.",
+            "message": "Gagal Registrasi: Wajah tidak terdeteksi di semua foto (atau setelah augmentasi).",
             "details": {"Error Log": errors}, 
+            "registration_logs": registration_logs, # Kirim log debug
             "next_url": "/register-page",
             "next_label": "Coba Lagi"
         })
@@ -98,6 +102,7 @@ async def register_user(
             "request": request,
             "status": "error",
             "message": "Gagal menghubungi Server Pusat untuk sinkronisasi Label atau Server Penuh.",
+            "registration_logs": registration_logs, # Kirim log debug
             "next_url": "/register-page",
             "next_label": "Coba Lagi Nanti"
         })
@@ -108,6 +113,7 @@ async def register_user(
             "request": request,
             "status": "error",
             "message": f"Registrasi Gagal: NIM {nim} sudah terdaftar di perangkat lain ({lbl_data.get('registered_edge_id')}).",
+            "registration_logs": registration_logs, # Kirim log debug
             "next_url": "/register-page",
             "next_label": "Coba Lagi"
         })
@@ -146,6 +152,7 @@ async def register_user(
             "NIM": nim,
             "Registered on": CLIENT_ID
         },
+        "registration_logs": registration_logs, # Kirim log visual registrasi
         "next_url": "/register-page",
         "next_label": "Daftar Lagi"
     })
@@ -186,13 +193,16 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
     
     # Proses Image
     content = await file.read()
-    emb_numpy, msg = face_pipeline.process_image(content)
+    emb_numpy, drawn_img_b64, msg = face_pipeline.process_image(content)
+    
+    attendance_log = {"Drawn Image B64": drawn_img_b64, "Detection Status": msg}
     
     if emb_numpy is None:
         return templates.TemplateResponse("result.html", {
             "request": request,
             "status": "error",
             "message": f"Wajah tidak terdeteksi: {msg}",
+            "details": attendance_log, # Kirim log deteksi BB
             "next_url": "/attendance-page",
             "next_label": "Coba Lagi"
         })
@@ -220,6 +230,9 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
         lbl_data = get_global_label(user.nim, client_id=CLIENT_ID) # Ambil label global lagi
         if lbl_data and lbl_data.get("label") == class_idx:
             matched_user = user
+            attendance_log["Predicted Label"] = class_idx
+            attendance_log["Predicted User NIM"] = user.nim
+            attendance_log["Predicted User Name"] = user.name
             break
     
     if not matched_user:
@@ -227,6 +240,7 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
             "request": request,
             "status": "unknown",
             "message": "Wajah terdeteksi, tapi data user (label) belum tersinkronisasi.",
+            "details": attendance_log, # Kirim log deteksi BB
             "next_url": "/attendance-page",
             "next_label": "Coba Lagi"
         })
@@ -260,6 +274,10 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
     
     print(f"[ATTENDANCE] Kandidat: {matched_user.name} | Softmax: {softmax_score:.2f} | Cosine Sim: {final_score:.2f}")
 
+    attendance_log["Softmax Score"] = f"{softmax_score:.2f}"
+    attendance_log["Cosine Similarity"] = f"{final_score:.2f}"
+    attendance_log["Threshold"] = THRESHOLD
+    
     if final_score > THRESHOLD:
         # REKAM LOG
         log = AttendanceLocal(
@@ -274,11 +292,7 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
             "request": request,
             "status": "success",
             "message": f"Halo, {matched_user.name}!",
-            "details": {
-                "Metode Verifikasi": "Biometric Match (Cosine)",
-                "Skor Kemiripan": f"{final_score:.2f} / 1.0",
-                "Waktu": "Baru Saja"
-            },
+            "details": attendance_log, # Kirim log deteksi BB
             "next_url": "/attendance-page",
             "next_label": "Absen Lagi"
         })
@@ -291,10 +305,7 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
             "request": request,
             "status": "unknown",
             "message": f"Maaf, {msg}",
-            "details": {
-                "Kandidat Terdekat": matched_user.name,
-                "Skor Kemiripan": f"{final_score:.2f} (Butuh > {THRESHOLD})",
-            },
+            "details": attendance_log, # Kirim log deteksi BB
             "next_url": "/attendance-page",
             "next_label": "Coba Lagi"
         })

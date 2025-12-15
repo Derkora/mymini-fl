@@ -1,146 +1,156 @@
 {% extends "layout.html" %}
 
 {% block content %}
-<h1>Form Absensi</h1>
+<h1>Absensi Live</h1>
 
-<div class="card">
-    <div style="margin-bottom: 20px; text-align: center;">
-        <button type="button" class="btn" id="btnModeCam" onclick="setMode('camera')">📸 Gunakan Kamera</button>
-        <button type="button" class="btn btn-secondary" id="btnModeUpload" onclick="setMode('upload')">📂 Upload Foto</button>
+<div class="card" style="text-align: center;">
+    
+    <div id="videoContainer" style="margin-bottom: 20px;">
+        <video id="video" width="400" height="300" autoplay style="border: 1px solid #ccc; border-radius: 4px;"></video>
+        <canvas id="canvas" width="400" height="300" style="display:none;"></canvas>
+    </div>
+    
+    <button type="button" class="btn btn-start" id="btnStart" onclick="startAttendance()">Mulai Absensi Live</button>
+    <button type="button" class="btn btn-warning" id="btnStop" onclick="stopAttendance()" style="display:none;">Hentikan Absensi</button>
+    
+    <div id="statusDisplay" style="margin-top: 20px; font-size: 1.2em; font-weight: bold; color: #333;">
+        Menunggu...
     </div>
 
-    <form action="/attendance" method="post" enctype="multipart/form-data" id="attForm">
-        
-        <div id="uploadContainer" style="display:none;">
-            <label>Upload Foto Wajah:</label>
-            <input type="file" name="file" accept="image/*" id="fileInput">
+    <div id="resultDisplay" style="margin-top: 20px; min-height: 200px; display: flex; flex-direction: column; align-items: center;">
         </div>
 
-        <div id="cameraContainer" style="text-align: center;">
-            <video id="video" width="320" height="240" autoplay style="border: 1px solid #ccc; border-radius: 4px; background: #000;"></video>
-            <canvas id="canvas" width="320" height="240" style="display:none;"></canvas>
-            <br>
-            <div id="previewContainer" style="display:none; margin-top:10px;">
-                <img id="previewImg" style="max-height: 200px; border: 2px solid #28a745; border-radius: 4px;">
-                <p>Foto Terambil!</p>
-            </div>
-            
-            <div style="margin-top: 10px;">
-                <button type="button" class="btn btn-warning" id="btnCapture" onclick="capturePhoto()">Ambil Foto</button>
-                <button type="button" class="btn btn-danger" id="btnRetake" onclick="resetCamera()" style="display:none;">Ulangi</button>
-            </div>
-        </div>
-
-        <div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; text-align: right;">
-            <button type="submit" class="btn" id="btnSubmit">Kirim Absensi</button>
-        </div>
-    </form>
 </div>
 
 <script>
-    let mode = 'camera'; // Default kamera
-    let capturedBlob = null;
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
-    const previewContainer = document.getElementById('previewContainer');
-    const previewImg = document.getElementById('previewImg');
-    const btnCapture = document.getElementById('btnCapture');
-    const btnRetake = document.getElementById('btnRetake');
-
-    // Inisialisasi awal
-    setMode('camera');
-
-    function setMode(newMode) {
-        mode = newMode;
-        if(mode === 'camera') {
-            document.getElementById('uploadContainer').style.display = 'none';
-            document.getElementById('cameraContainer').style.display = 'block';
-            document.getElementById('fileInput').required = false;
-            startCamera();
-        } else {
-            document.getElementById('uploadContainer').style.display = 'block';
-            document.getElementById('cameraContainer').style.display = 'none';
-            document.getElementById('fileInput').required = true;
-            stopCamera();
-        }
-    }
+    const statusDisplay = document.getElementById('statusDisplay');
+    const resultDisplay = document.getElementById('resultDisplay');
+    let attendanceInterval;
+    let isRunning = false;
+    const captureRate = 3000; // Kirim frame setiap 3 detik
 
     async function startCamera() {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 400, height: 300 } });
             video.srcObject = stream;
-            resetCamera();
+            return true;
         } catch(err) {
-            console.error("Gagal akses kamera:", err);
-            alert("Tidak bisa mengakses kamera. Beralih ke mode upload.");
-            setMode('upload');
+            statusDisplay.innerHTML = '<span style="color: red;">Gagal akses kamera: ' + err + '</span>';
+            return false;
         }
     }
 
     function stopCamera() {
         if(video.srcObject) {
             video.srcObject.getTracks().forEach(track => track.stop());
+            video.srcObject = null;
         }
     }
 
-    function capturePhoto() {
+    function captureAndSend() {
+        if (!isRunning) return;
+
+        statusDisplay.innerText = "Mendeteksi wajah dan mengirim data...";
+        
         const context = canvas.getContext('2d');
-        context.drawImage(video, 0, 0, 320, 240);
+        // Pastikan dimensi video digunakan untuk menggambar
+        context.drawImage(video, 0, 0, 400, 300); 
         
         canvas.toBlob(function(blob) {
-            capturedBlob = blob;
-            
-            // UI Update
-            video.style.display = 'none';
-            previewImg.src = URL.createObjectURL(blob);
-            previewContainer.style.display = 'block';
-            btnCapture.style.display = 'none';
-            btnRetake.style.display = 'inline-block';
-        }, 'image/jpeg');
-    }
-
-    function resetCamera() {
-        capturedBlob = null;
-        video.style.display = 'inline-block';
-        previewContainer.style.display = 'none';
-        btnCapture.style.display = 'inline-block';
-        btnRetake.style.display = 'none';
-    }
-
-    // Handle Submit
-    document.getElementById('attForm').addEventListener('submit', function(e) {
-        if(mode === 'camera') {
-            if(!capturedBlob) {
-                alert("Silakan ambil foto terlebih dahulu!");
-                e.preventDefault();
-                return;
-            }
-            
-            e.preventDefault();
-            const formData = new FormData(this);
-            // Tambahkan file blob ke form data dengan nama 'file' (sesuai main.py client)
-            formData.set('file', capturedBlob, 'attendance_capture.jpg');
-
-            const btn = document.getElementById('btnSubmit');
-            btn.innerHTML = "Memproses...";
-            btn.disabled = true;
+            const formData = new FormData();
+            formData.append('file', blob, 'live_frame.jpg');
 
             fetch('/attendance', {
                 method: 'POST',
                 body: formData
             })
-            .then(response => response.text())
+            .then(response => response.text()) 
             .then(html => {
-                document.open();
-                document.write(html);
-                document.close();
+                // Parse HTML result (kita asumsikan endpoint /attendance mengembalikan HTML result)
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = html;
+                
+                // Ambil elemen status dan message
+                const statusBox = tempDiv.querySelector('.status-box');
+                const h1Status = tempDiv.querySelector('h1');
+                
+                if (statusBox) {
+                    const message = statusBox.querySelector('h3').textContent;
+                    
+                    // Coba ambil gambar bounding box dari details (jika ada)
+                    const bbImg = statusBox.querySelector('img');
+                    
+                    let newContent = '';
+                    let statusColor = 'orange';
+
+                    if (h1Status && h1Status.style.color === 'green') {
+                        statusColor = 'green';
+                    } else if (h1Status && h1Status.style.color === 'red') {
+                        statusColor = 'red';
+                    }
+
+                    statusDisplay.innerHTML = `<span style="color: ${statusColor};">${message}</span>`;
+                    
+                    // Update tampilan hasil
+                    resultDisplay.innerHTML = '';
+                    if (bbImg) {
+                        resultDisplay.appendChild(bbImg);
+                    }
+                    
+                    // Tampilkan detail hasil (nama, skor, dll)
+                    const detailsList = statusBox.querySelector('ul');
+                    if(detailsList) {
+                         const detailsDiv = document.createElement('div');
+                         detailsDiv.style.marginTop = '10px';
+                         detailsDiv.innerHTML = '<strong>Detail Absensi Terakhir:</strong>';
+                         detailsDiv.appendChild(detailsList);
+                         resultDisplay.appendChild(detailsDiv);
+                    }
+                } else {
+                    statusDisplay.innerText = "Respon server tidak valid.";
+                }
             })
             .catch(err => {
-                alert("Error: " + err);
-                btn.innerHTML = "Kirim Absensi";
-                btn.disabled = false;
+                statusDisplay.innerHTML = `<span style="color: red;">Error saat mengirim frame: ${err}</span>`;
             });
-        }
-    });
+        }, 'image/jpeg');
+    }
+
+    async function startAttendance() {
+        if (isRunning) return;
+        
+        const cameraStarted = await startCamera();
+        if (!cameraStarted) return;
+        
+        isRunning = true;
+        document.getElementById('btnStart').style.display = 'none';
+        document.getElementById('btnStop').style.display = 'inline-block';
+        statusDisplay.innerText = "Absensi live dimulai (mengirim setiap 3 detik)...";
+        resultDisplay.innerHTML = '';
+
+        // Jeda sebentar agar kamera siap, lalu mulai interval
+        setTimeout(() => {
+            captureAndSend(); // Kirim frame pertama segera
+            attendanceInterval = setInterval(captureAndSend, captureRate);
+        }, 1000); 
+    }
+
+    function stopAttendance() {
+        if (!isRunning) return;
+        
+        isRunning = false;
+        clearInterval(attendanceInterval);
+        stopCamera();
+        
+        document.getElementById('btnStart').style.display = 'inline-block';
+        document.getElementById('btnStop').style.display = 'none';
+        statusDisplay.innerText = "Absensi Live Dihentikan.";
+        resultDisplay.innerHTML = '';
+    }
+
+    // Pastikan berhenti jika user navigasi
+    window.addEventListener('beforeunload', stopAttendance);
 </script>
 {% endblock %}

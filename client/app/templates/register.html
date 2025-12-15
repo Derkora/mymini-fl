@@ -4,12 +4,6 @@
 <h1>Registrasi Pengguna Baru</h1>
 
 <div class="card">
-    <div style="margin-bottom: 20px;">
-        <label>Mode Foto:</label>
-        <button type="button" class="btn" id="btnModeUpload" onclick="setMode('upload')">Upload File</button>
-        <button type="button" class="btn btn-secondary" id="btnModeCam" onclick="setMode('camera')">Gunakan Kamera</button>
-    </div>
-
     <form action="/register" method="post" enctype="multipart/form-data" id="regForm">
         <label>Nama Lengkap:</label>
         <input type="text" name="name" required placeholder="Nama Anda">
@@ -18,17 +12,8 @@
         <input type="text" name="nim" required placeholder="NIM">
 
         <div id="uploadContainer">
-            <label>Upload 5 Foto Wajah (JPG/PNG):</label>
-            <input type="file" name="files" multiple accept="image/*" id="fileInput">
-        </div>
-
-        <div id="cameraContainer" style="display:none; text-align: center;">
-            <video id="video" width="320" height="240" autoplay style="border: 1px solid #ccc; border-radius: 4px;"></video>
-            <canvas id="canvas" width="320" height="240" style="display:none;"></canvas>
-            <br>
-            <button type="button" class="btn btn-warning" onclick="capturePhoto()">Ambil Foto (<span id="photoCount">0</span>/5)</button>
-            <div id="previewStrip" style="margin-top:10px; display:flex; gap:5px; justify-content:center;"></div>
-            <div id="hiddenInputs"></div>
+            <label>Upload Foto Wajah (JPG/PNG):</label>
+            <input type="file" name="files" multiple accept="image/*" id="fileInput" required>
         </div>
 
         <div style="margin-top: 20px;">
@@ -37,94 +22,4 @@
     </form>
 </div>
 
-<script>
-    let mode = 'upload';
-    let capturedImages = [];
-    const video = document.getElementById('video');
-
-    function setMode(newMode) {
-        mode = newMode;
-        if(mode === 'camera') {
-            document.getElementById('uploadContainer').style.display = 'none';
-            document.getElementById('cameraContainer').style.display = 'block';
-            document.getElementById('fileInput').required = false;
-            startCamera();
-        } else {
-            document.getElementById('uploadContainer').style.display = 'block';
-            document.getElementById('cameraContainer').style.display = 'none';
-            document.getElementById('fileInput').required = true;
-            stopCamera();
-        }
-    }
-
-    async function startCamera() {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-            video.srcObject = stream;
-        } catch(err) {
-            alert("Gagal akses kamera: " + err);
-        }
-    }
-
-    function stopCamera() {
-        if(video.srcObject) {
-            video.srcObject.getTracks().forEach(track => track.stop());
-        }
-    }
-
-    function capturePhoto() {
-        if(capturedImages.length >= 5) {
-            alert("Maksimal 5 foto.");
-            return;
-        }
-        const canvas = document.getElementById('canvas');
-        const context = canvas.getContext('2d');
-        context.drawImage(video, 0, 0, 320, 240);
-        
-        // Convert to blob/base64
-        canvas.toBlob(function(blob) {
-            capturedImages.push(blob);
-            
-            // Update UI Counter
-            document.getElementById('photoCount').innerText = capturedImages.length;
-            
-            // Tampilkan Preview Kecil
-            const img = document.createElement('img');
-            img.src = URL.createObjectURL(blob);
-            img.height = 50;
-            document.getElementById('previewStrip').appendChild(img);
-
-        }, 'image/jpeg');
-    }
-
-    // Intercept form submit untuk mode kamera
-    document.getElementById('regForm').addEventListener('submit', function(e) {
-        if(mode === 'camera') {
-            if(capturedImages.length < 1) {
-                alert("Ambil minimal 1 foto!");
-                e.preventDefault();
-                return;
-            }
-
-            e.preventDefault(); 
-            const formData = new FormData(this);
-            
-            capturedImages.forEach((blob, i) => {
-                formData.append('files', blob, `cam_capture_${i}.jpg`);
-            });
-
-            fetch('/register', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.text()) 
-            .then(html => {
-                document.open();
-                document.write(html);
-                document.close();
-            })
-            .catch(err => alert("Error: " + err));
-        }
-    });
-</script>
 {% endblock %}
