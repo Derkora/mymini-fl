@@ -21,7 +21,7 @@ class UserGlobal(Base):
     # Tabel Users Global
     user_id = Column(Integer, primary_key=True, autoincrement=True) 
     name = Column(String)
-    nim = Column(String)
+    nrp = Column(String)
     registered_edge_id = Column(String, ForeignKey("clients.edge_id"))
     created_at = Column(DateTime, default=datetime.utcnow)
 

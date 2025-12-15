@@ -17,9 +17,9 @@ class LocalTrainer:
         self.encryptor = EmbeddingEncryptor()
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    def _fetch_global_label(self, nim): 
+    def _fetch_global_label(self, nrp): 
         try:
-            resp = requests.post(f"{SERVER_URL}/api/training/get_label", json={"nim": nim}, timeout=2)
+            resp = requests.post(f"{SERVER_URL}/api/training/get_label", json={"nrp": nrp}, timeout=2)
             if resp.status_code == 200:
                 return resp.json()["label"]
         except:
@@ -33,7 +33,7 @@ class LocalTrainer:
 
         user_map = {}
         for u in users:
-            lbl = self._fetch_global_label(u.nim)
+            lbl = self._fetch_global_label(u.nrp)
             if lbl is not None:
                 user_map[u.user_id] = lbl
             else:

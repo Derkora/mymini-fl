@@ -9,17 +9,6 @@ from typing import List, Tuple
 from flwr.common import Metrics, ndarrays_to_parameters
 
 from app.utils.mobilefacenet import MobileFaceNet
-
-def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
-    # Agregasi metrik (accuracy & loss) berdasarkan jumlah data (num_examples)
-    accuracies = [num_examples * m["accuracy"] for num_examples, m in metrics]
-    losses = [num_examples * m["loss"] for num_examples, m in metrics]
-    examples = [num_examples for num_examples, _ in metrics]
-    
-    return {
-        "accuracy": sum(accuracies) / sum(examples),
-        "loss": sum(losses) / sum(examples),
-    }
     
 class FLServerManager:
     def __init__(self):
@@ -31,8 +20,10 @@ class FLServerManager:
         # Metrics
         self.start_time = 0
         self.end_time = 0
-        self.model_size_bytes = 0 # Ukuran payload model head
+        self.model_size_bytes = 0 
         self.clients_per_round = 2 
+        self.metrics_history = [] # List of {"round": int, "loss": float, "accuracy": float}
+        self.reset_counter = 0 
 
     def _get_initial_parameters(self):
         db = SessionLocal()
@@ -70,6 +61,7 @@ class FLServerManager:
         self.total_rounds = rounds
         self.start_time = time.time()
         self.end_time = 0 
+        self.metrics_history = [] # Reset history saat mulai baru
         
         if self.model_size_bytes == 0:
              self._get_initial_parameters()
@@ -90,6 +82,38 @@ class FLServerManager:
             def fit_config(rnd):
                 self.current_round = rnd
                 return {"round": rnd}
+
+            # Definisi Weighted Average dengan akses ke self.metrics_history
+            def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
+                if not metrics:
+                    return {"accuracy": 0.0, "loss": 0.0}
+                    
+                accuracies = [num_examples * m.get("accuracy", 0) for num_examples, m in metrics]
+                losses = [num_examples * m.get("loss", 0) for num_examples, m in metrics]
+                examples = [num_examples for num_examples, _ in metrics]
+                
+                total_examples = sum(examples)
+                print(f"[DEBUG AGGREGATE] Total Examples: {total_examples}. Metrics count: {len(metrics)}")
+                if total_examples == 0:
+                     print("[DEBUG AGGREGATE] Zero examples, returning 0.0 metrics.")
+                     return {"accuracy": 0.0, "loss": 0.0}
+
+                aggregated = {
+                    "accuracy": sum(accuracies) / total_examples,
+                    "loss": sum(losses) / total_examples,
+                }
+                
+                existing_round = next((item for item in self.metrics_history if item["round"] == self.current_round), None)
+                if existing_round:
+                     existing_round.update(aggregated)
+                else:
+                     self.metrics_history.append({
+                         "round": self.current_round,
+                         "loss": aggregated["loss"],
+                         "accuracy": aggregated["accuracy"]
+                     })
+                     
+                return aggregated
 
             strategy = fl.server.strategy.FedAvg(
                 fraction_fit=1.0,
@@ -147,5 +171,6 @@ class FLServerManager:
             "current_round": self.current_round,
             "total_rounds": self.total_rounds,
             "elapsed_time": time_str, 
-            "bandwidth_kb": bandwidth_str 
+            "bandwidth_kb": bandwidth_str,
+            "metrics_history": sorted(self.metrics_history, key=lambda x: x['round']) 
         }

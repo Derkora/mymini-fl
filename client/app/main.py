@@ -62,7 +62,7 @@ async def attendance_page(request: Request):
 async def register_user(
     request: Request,
     name: str = Form(...),
-    nim: str = Form(...),
+    nrp: str = Form(...),
     files: List[UploadFile] = File(...),
     db: Session = Depends(get_db)
 ):
@@ -74,12 +74,12 @@ async def register_user(
     for file in files:
         content = await file.read()
         
-        # PERUBAHAN: Sekarang mengembalikan embeddings, pesan, dan log debug
-        embeddings_list, msg, file_debug_logs = face_pipeline.process_with_augmentation(content, filename=file.filename)
+        # Sekarang mengembalikan [(emb, img), ...], pesan, dan log debug
+        data_list, msg, file_debug_logs = face_pipeline.process_with_augmentation(content, filename=file.filename)
         registration_logs.extend(file_debug_logs)
         
-        if embeddings_list:
-            valid_embeddings.extend(embeddings_list)
+        if data_list:
+            valid_embeddings.extend(data_list)
         else:
             print(f"[REGISTER ERROR] File {file.filename}: {msg}") 
             errors.append(f"{file.filename}: {msg}")
@@ -95,7 +95,7 @@ async def register_user(
             "next_label": "Coba Lagi"
         })
     
-    lbl_data = get_global_label(nim, name, client_id=CLIENT_ID) 
+    lbl_data = get_global_label(nrp, name, client_id=CLIENT_ID) 
     
     if lbl_data is None:
         return templates.TemplateResponse("result.html", {
@@ -112,29 +112,34 @@ async def register_user(
         return templates.TemplateResponse("result.html", {
             "request": request,
             "status": "error",
-            "message": f"Registrasi Gagal: NIM {nim} sudah terdaftar di perangkat lain ({lbl_data.get('registered_edge_id')}).",
+            "message": f"Registrasi Gagal: NRP {nrp} sudah terdaftar di perangkat lain ({lbl_data.get('registered_edge_id')}).",
             "registration_logs": registration_logs, # Kirim log debug
             "next_url": "/register-page",
             "next_label": "Coba Lagi"
         })
 
-    existing_user = db.query(UserLocal).filter(UserLocal.nim == nim).first()
+    existing_user = db.query(UserLocal).filter(UserLocal.nrp == nrp).first()
     
     if existing_user:
         new_user = existing_user
         print(f"[REGISTER] User {name} sudah ada, menambahkan data wajah baru.")
     else:
-        new_user = UserLocal(name=name, nim=nim)
+        new_user = UserLocal(name=name, nrp=nrp)
         db.add(new_user)
         db.commit()
         db.refresh(new_user)
 
-    for vec in valid_embeddings:
+    for vec, img_np in valid_embeddings:
         # Enkripsi Embedding (AES-256)
         enc_data, iv, salt = encryptor.encrypt_embedding(vec)
+        
+        # Enkripsi Image (AES-256) - Reuse encrypt_embedding karena support numpy
+        enc_img, _, _ = encryptor.encrypt_embedding(img_np)
+        
         db_emb = Embedding(
             user_id=new_user.user_id,
             encrypted_embedding=enc_data,
+            encrypted_image=enc_img, # Simpan gambar terenkripsi
             iv=iv,
             salt=salt
         )
@@ -149,7 +154,7 @@ async def register_user(
         "details": {
             "Global Label ID": lbl_data.get("label"),
             "Total Sampel Wajah": len(valid_embeddings), 
-            "NIM": nim,
+            "NRP": nrp,
             "Registered on": CLIENT_ID
         },
         "registration_logs": registration_logs, # Kirim log visual registrasi
@@ -193,7 +198,7 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
     
     # Proses Image
     content = await file.read()
-    emb_numpy, drawn_img_b64, msg = face_pipeline.process_image(content)
+    emb_numpy, drawn_img_b64, msg = face_pipeline.process_image(content, model=backbone)
     
     attendance_log = {"Drawn Image B64": drawn_img_b64, "Detection Status": msg}
     
@@ -207,14 +212,13 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
             "next_label": "Coba Lagi"
         })
 
-    # Inferensi (Backbone)
+    # Inferensi (Head Classifier)
+    # emb_numpy sudah berupa embedding (128-dim), cukup ubah ke tensor
     emb_tensor = torch.tensor(emb_numpy, dtype=torch.float32).unsqueeze(0)
+    
     with torch.no_grad():
-        # Ekstraksi embedding dari MobileFaceNet
-        embeddings = backbone(emb_tensor)
-        
-        # Klasifikasi 
-        outputs = model_head(embeddings)
+        # Masukkan langsung embedding ke Head (karena Backbone sudah dijalankan di face_pipeline)
+        outputs = model_head(emb_tensor)
         probs = torch.nn.functional.softmax(outputs, dim=1)
         confidence, predicted_class = torch.max(probs, 1)
         
@@ -227,11 +231,11 @@ async def attendance(request: Request, file: UploadFile = File(...), db: Session
     
     # Cari user lokal yang label global-nya cocok dengan hasil klasifikasi
     for user in users:
-        lbl_data = get_global_label(user.nim, client_id=CLIENT_ID) # Ambil label global lagi
+        lbl_data = get_global_label(user.nrp, client_id=CLIENT_ID) # Ambil label global lagi
         if lbl_data and lbl_data.get("label") == class_idx:
             matched_user = user
             attendance_log["Predicted Label"] = class_idx
-            attendance_log["Predicted User NIM"] = user.nim
+            attendance_log["Predicted User NRP"] = user.nrp
             attendance_log["Predicted User Name"] = user.name
             break
     

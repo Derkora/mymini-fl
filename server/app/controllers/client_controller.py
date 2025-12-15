@@ -14,10 +14,17 @@ class ClientStatus(BaseModel):
 # Simulasi database sementara
 registered_clients = {}  
 
+from app.server_manager_instance import fl_manager
+
 @router.post("/register")
 def register_client(client: ClientStatus):
     registered_clients[client.id] = client.dict()
-    return {"message": "Client registered", "client": client}
+    # Menyertakan reset_counter dalam response
+    return {
+        "message": "Client registered", 
+        "client": client, 
+        "server_reset_counter": fl_manager.reset_counter
+    }
 
 @router.get("/")
 def get_all_clients():

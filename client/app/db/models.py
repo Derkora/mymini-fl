@@ -8,7 +8,7 @@ class UserLocal(Base):
     # SRS 2.1: Users Local
     user_id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String)
-    nim = Column(String)
+    nrp = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     embeddings = relationship("Embedding", back_populates="user")
@@ -24,6 +24,9 @@ class Embedding(Base):
     encrypted_embedding = Column(LargeBinary) # Hasil AES-256
     iv = Column(LargeBinary)   # Initialization Vector
     salt = Column(LargeBinary) # Untuk derivasi key
+    
+    # Simpan gambar asli (terenkripsi) untuk Training Backbone
+    encrypted_image = Column(LargeBinary, nullable=True) 
     
     created_at = Column(DateTime, default=datetime.utcnow)
 

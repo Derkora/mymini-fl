@@ -1,4 +1,5 @@
 import flwr as fl
+import traceback
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -26,9 +27,9 @@ SERVER_URL = "http://server:8080"
 MAX_USERS_CAPACITY = 100
 EMBEDDING_SIZE = 128
 
-def get_global_label(nim: str, name: str = "", client_id: str = ""): # Menambahkan client_id
+def get_global_label(nrp: str, name: str = "", client_id: str = ""): # Menambahkan client_id
     try:
-        payload = {"nim": nim, "name": name, "registered_edge_id": client_id} # Kirim CLIENT_ID
+        payload = {"nrp": nrp, "name": name, "registered_edge_id": client_id} # Kirim CLIENT_ID
         response = requests.post(f"{SERVER_URL}/api/training/get_label", json=payload, timeout=5)
         if response.status_code == 200:
             return response.json() # Mengembalikan seluruh data (termasuk label & registered_edge_id)
@@ -46,16 +47,16 @@ def sync_users_from_server():
         global_users = response.json() 
         db = SessionLocal()
         for u_data in global_users:
-            nim = u_data['nim']
+            nrp = u_data['nrp']
             name = u_data['name']
             
             if u_data.get('registered_edge_id') and u_data.get('registered_edge_id') != CLIENT_ID:
                 continue
 
-            exists = db.query(UserLocal).filter(UserLocal.nim == nim).first()
+            exists = db.query(UserLocal).filter(UserLocal.nrp == nrp).first()
             if not exists:
                 print(f"[SYNC] Menambahkan user baru: {name}")
-                new_user = UserLocal(name=name, nim=nim)
+                new_user = UserLocal(name=name, nrp=nrp)
                 db.add(new_user)
         db.commit()
         db.close()
@@ -63,7 +64,11 @@ def sync_users_from_server():
     except Exception as e:
         print(f"[SYNC FAILED] {e}")
         
+
+CURRENT_RESET_COUNTER = -1 # Inisialisasi awal
+
 def report_status(status_msg, metrics=None):
+    global CURRENT_RESET_COUNTER
     try:
         payload = {
             "id": CLIENT_ID,
@@ -73,7 +78,25 @@ def report_status(status_msg, metrics=None):
         }
         if metrics:
             payload["metrics"] = metrics
-        requests.post(f"{SERVER_URL}/api/clients/register", json=payload, timeout=2)
+        response = requests.post(f"{SERVER_URL}/api/clients/register", json=payload, timeout=2)
+        
+        if response.status_code == 200:
+            data = response.json()
+            server_counter = data.get("server_reset_counter", 0)
+            
+            # Init counter saat pertama kali connect
+            if CURRENT_RESET_COUNTER == -1:
+                CURRENT_RESET_COUNTER = server_counter
+            
+            # Cek jika server telah di-reset (counter naik)
+            elif server_counter > CURRENT_RESET_COUNTER:
+                print(f"[CLIENT] Detected Server Reset (Counter: {server_counter}). Resetting Local Model...")
+                if os.path.exists("local_backbone.pth"):
+                    os.remove("local_backbone.pth")
+                    print("[CLIENT] local_backbone.pth deleted.")
+                
+                CURRENT_RESET_COUNTER = server_counter
+                
     except Exception as e:
         print(f"[CLIENT REPORT] Gagal lapor status: {e}")
 
@@ -218,21 +241,45 @@ def load_data_from_db():
         print(f"[CLIENT DATA] Sinkronisasi {len(users)} user lokal...")
         for u in users:
             # Mengambil data label
-            global_label_data = get_global_label(u.nim, client_id=CLIENT_ID) 
+            global_label_data = get_global_label(u.nrp, client_id=CLIENT_ID) 
             if global_label_data and global_label_data.get("label") is not None:
                 user_to_label[u.user_id] = global_label_data.get("label")
 
         embeddings = db.query(Embedding).all()
+        print(f"[CLIENT DATA] Found {len(embeddings)} total embeddings in DB.")
+        
         X_list, y_list = [], []
+        image_count = 0
         
         for emb in embeddings:
-            if emb.user_id not in user_to_label: continue
-            # Decrypt embedding
-            vec = encryptor.decrypt_embedding(emb.encrypted_embedding, emb.iv)
-            label = user_to_label[emb.user_id]
-            X_list.append(vec)
-            y_list.append(label)
-            
+            try:
+                # Decrypt Data
+                if emb.encrypted_image:
+                     image_count += 1
+                     img_np = encryptor.decrypt_embedding(emb.encrypted_image, emb.iv)
+                     
+                     # Preprocessing (Standardization yang sama dengan face_pipeline)
+                     # Image Standardization: (x - 127.5) / 128.0
+                     img_std = (img_np.astype(np.float32) - 127.5) / 128.0
+                     
+                     # Convert to Tensor (HWC -> CHW)
+                     img_tensor = torch.tensor(img_std).permute(2, 0, 1).float()
+                     
+                     # Ensure the user_id exists in user_to_label and get the global label
+                     if emb.user_id in user_to_label:
+                         X_list.append(img_tensor.numpy()) # Append as numpy for now, later stacked
+                         y_list.append(user_to_label[emb.user_id]) # Gunakan label global
+                     else:
+                         print(f"[DATA] Skip sample {emb.embedding_id}: User {emb.user_id} not found in global labels. Available users: {list(user_to_label.keys())[:5]}...")
+                         continue
+                else:
+                    continue
+                    
+            except Exception as e:
+                print(f"[DATA] Decrypt error for {emb.embedding_id}: {e}")
+                continue
+        
+        print(f"[CLIENT DATA] Loaded {len(X_list)} valid samples (from {image_count} with images).")
         if len(X_list) == 0:
             return None, None
             
@@ -240,11 +287,12 @@ def load_data_from_db():
         y_tensor = torch.tensor(np.array(y_list), dtype=torch.long)
         full_dataset = TensorDataset(X_tensor, y_tensor)
         
-        train_size = int(0.8 * len(full_dataset))
-        test_size = len(full_dataset) - train_size
-        
-        if test_size == 0 and len(full_dataset) > 1:
-            test_size = 1; train_size = len(full_dataset) - 1
+        if len(full_dataset) == 1:
+            train_size = 1
+            test_size = 0
+        else:
+            train_size = int(0.8 * len(full_dataset))
+            test_size = len(full_dataset) - train_size
             
         train_dataset, test_dataset = random_split(full_dataset, [train_size, test_size])
         
@@ -270,73 +318,86 @@ class RealClient(fl.client.NumPyClient):
         return [val.cpu().numpy() for _, val in self.backbone.state_dict().items()]
 
     def fit(self, parameters, config):
-        rnd = config.get('round', '?')
-        print(f"[CLIENT] Round {rnd} dimulai.")
-        report_status(f"Sedang Training (Ronde {rnd})")
+        try:
+            rnd = config.get('round', '?')
+            print(f"[CLIENT] Round {rnd} dimulai.")
+            report_status(f"Sedang Training (Ronde {rnd})")
 
-        # Load Global Model Backbone
-        # Harus sesuai dengan urutan parameter di MobileFaceNet
-        params_dict = zip(self.backbone.state_dict().keys(), parameters)
-        state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
-        self.backbone.load_state_dict(state_dict, strict=True)
-        
-        # Simpan backbone yang baru di-load untuk digunakan di /attendance
-        save_backbone(self.backbone, path="local_backbone.pth")
+            # Load Global Model Backbone
+            # Harus sesuai dengan urutan parameter di MobileFaceNet
+            params_dict = zip(self.backbone.state_dict().keys(), parameters)
+            state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
+            self.backbone.load_state_dict(state_dict, strict=True)
+            
+            # Simpan backbone yang baru di-load untuk digunakan di /attendance
+            save_backbone(self.backbone, path="local_backbone.pth")
 
-        # Load & Split Data
-        trainloader, valloader = load_data_from_db()
-        if trainloader is None:
-            # Mengembalikan parameter yang sama jika tidak ada data
-            return self.get_parameters({}), 0, {}
+            # Load & Split Data
+            trainloader, valloader = load_data_from_db()
+            if trainloader is None:
+                # Mengembalikan parameter yang sama jika tidak ada data
+                return self.get_parameters({}), 0, {}
 
-        # Training Backbone + Head Lokal
-        loss, accuracy = train_model(self.backbone, self.local_head, trainloader, valloader, epochs=10, patience=3)
+            # Training Backbone + Head Lokal
+            loss, accuracy = train_model(self.backbone, self.local_head, trainloader, valloader, epochs=10, patience=3)
 
-        # Simpan Model Backbone Lokal 
-        save_backbone(self.backbone, path="local_backbone.pth")
-        
-        print("[CLIENT] Menambahkan DP Noise...")
-        params = self.get_parameters(config={})
-        noise_multiplier = 0.005 # Tingkat noise
-        noisy_params = []
-        for p in params:
-            noise = np.random.normal(0, noise_multiplier, p.shape)
-            noisy_params.append(p + noise)
-        
-        status_msg = f"Selesai (L:{loss:.3f}, A:{accuracy:.1%})"
-        report_status(status_msg, metrics={"loss": loss, "accuracy": accuracy})
-        
-        # Mengembalikan parameter MobileFaceNet yang sudah ditambahkan noise
-        return noisy_params, len(trainloader.dataset), {"loss": loss, "accuracy": accuracy}
+            # Simpan Model Backbone Lokal 
+            save_backbone(self.backbone, path="local_backbone.pth")
+            
+            print("[CLIENT] Menambahkan DP Noise...")
+            params = self.get_parameters(config={})
+            noise_multiplier = 0.005 # Tingkat noise
+            noisy_params = []
+            for p in params:
+                noise = np.random.normal(0, noise_multiplier, p.shape)
+                noisy_params.append(p + noise)
+            
+            status_msg = f"Selesai (L:{loss:.3f}, A:{accuracy:.1%})"
+            report_status(status_msg, metrics={"loss": loss, "accuracy": accuracy})
+            
+            # Mengembalikan parameter MobileFaceNet yang sudah ditambahkan noise
+            return noisy_params, len(trainloader.dataset), {"loss": loss, "accuracy": accuracy}
+        except Exception as e:
+            print(f"[CLIENT FIT ERROR] {e}")
+            traceback.print_exc()
+            return [], 0, {}  # Return empty to avoid crash propagation
 
     def evaluate(self, parameters, config):
-        # Load Global Model Backbone
-        params_dict = zip(self.backbone.state_dict().keys(), parameters)
-        state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
-        self.backbone.load_state_dict(state_dict, strict=True)
-        
-        # Inisialisasi Head lokal (untuk evaluasi)
-        local_head_eval = LocalClassifierHead(num_classes=MAX_USERS_CAPACITY)
+        try:
+            # Load Global Model Backbone
+            params_dict = zip(self.backbone.state_dict().keys(), parameters)
+            state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
+            self.backbone.load_state_dict(state_dict, strict=True)
+            
+            # Inisialisasi Head lokal (untuk evaluasi)
+            local_head_eval = LocalClassifierHead(num_classes=MAX_USERS_CAPACITY)
 
-        _, testloader = load_data_from_db()
-        
-        if testloader is None or len(testloader.dataset) == 0:
+            _, testloader = load_data_from_db()
+            
+            if testloader is None or len(testloader.dataset) == 0:
+                return 0.0, 0, {"accuracy": 0.0}
+
+            # Evaluasi dengan Head Lokal yang baru diinisialisasi
+            loss, accuracy = validate_model(self.backbone, local_head_eval, testloader)
+            
+            print(f"[CLIENT] Evaluasi (Test Set). Loss: {loss:.4f}, Acc: {accuracy:.1%}")
+            return float(loss), len(testloader.dataset), {"accuracy": float(accuracy)}
+        except Exception as e:
+            print(f"[CLIENT EVAL ERROR] {e}")
+            traceback.print_exc()
             return 0.0, 0, {"accuracy": 0.0}
-
-        # Evaluasi dengan Head Lokal yang baru diinisialisasi
-        loss, accuracy = validate_model(self.backbone, local_head_eval, testloader)
-        
-        print(f"[CLIENT] Evaluasi (Test Set). Loss: {loss:.4f}, Acc: {accuracy:.1%}")
-        return float(loss), len(testloader.dataset), {"accuracy": float(accuracy)}
 
 def start_flower_client():
     report_status("Online (Menunggu Server)")
     while True:
         try:
             print("[CLIENT] Connecting to FL Server...")
-            # Menggunakan MobileFaceNet sebagai inisialisasi awal
-            fl.client.start_numpy_client(server_address="server:8085", client=RealClient())
-            break
+            fl.client.start_client(server_address="server:8085", client=RealClient().to_client())
+            print("[CLIENT] FL Session ended or Server stopped. Returning to standby.")
+            report_status("Online (Menunggu Server)")
+            time.sleep(5)
         except Exception as e:
-            print(f"[CLIENT] Connection failed. Retrying...")
+            print(f"[CLIENT ERROR] Connection failed or ended with error: {e}")
+            print(f"[CLIENT] Standby... Waiting for Training Signal from Server Dashboard.")
+            report_status("Online (Menunggu Server)")
             time.sleep(5)
