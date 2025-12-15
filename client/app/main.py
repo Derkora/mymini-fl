@@ -134,13 +134,17 @@ async def register_user(
         enc_data, iv, salt = encryptor.encrypt_embedding(vec)
         
         # Enkripsi Image (AES-256) - Reuse encrypt_embedding karena support numpy
-        enc_img, _, _ = encryptor.encrypt_embedding(img_np)
+        enc_img, img_iv, _ = encryptor.encrypt_embedding(img_np)
+        
+        # GABUNGKAN IV + Image Encrypted agar bisa didekripsi tanpa kolom DB baru
+        # IV adalah 16 bytes pertama
+        final_image_blob = img_iv + enc_img
         
         db_emb = Embedding(
             user_id=new_user.user_id,
             encrypted_embedding=enc_data,
-            encrypted_image=enc_img, # Simpan gambar terenkripsi
-            iv=iv,
+            encrypted_image=final_image_blob, # Simpan IV + Ciphertext
+            iv=iv, # Ini IV untuk embedding, biarkan saja
             salt=salt
         )
         db.add(db_emb)

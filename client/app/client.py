@@ -256,7 +256,17 @@ def load_data_from_db():
                 # Decrypt Data
                 if emb.encrypted_image:
                      image_count += 1
-                     img_np = encryptor.decrypt_embedding(emb.encrypted_image, emb.iv)
+                     
+                     # Extract IV dan Ciphertext (Format: 16 bytes IV + Data)
+                     blob = emb.encrypted_image
+                     if len(blob) < 17: # Minimal 16 bytes IV + data
+                         print(f"[DATA] Skip sample {emb.embedding_id}: Image blob too short.")
+                         continue
+                         
+                     img_iv = blob[:16]
+                     img_ciphertext = blob[16:]
+                     
+                     img_np = encryptor.decrypt_embedding(img_ciphertext, img_iv)
                      
                      # Preprocessing (Standardization yang sama dengan face_pipeline)
                      # Image Standardization: (x - 127.5) / 128.0
