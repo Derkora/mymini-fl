@@ -56,7 +56,88 @@ async def register_page(request: Request):
 
 @app.get("/attendance-page", response_class=HTMLResponse)
 async def attendance_page(request: Request):
-    return templates.TemplateResponse("attendance.html", {"request": request})
+    return templates.TemplateResponse("attendance_live.html", {"request": request})
+
+@app.post("/api/attendance/live")
+async def attendance_live(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """API untuk Live Facial Recognition (JSON Response) - Tanpa Login/Absen ke DB (Hanya Identifikasi)"""
+    if not is_model_ready():
+        return {"status": "error", "message": "Model not ready"}
+
+    backbone, model_head = build_local_model(num_classes=MAX_USERS_CAPACITY, backbone_path="local_backbone.pth")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    backbone.to(device).eval()
+    model_head.to(device).eval()
+    
+    content = await file.read()
+    emb_numpy, box, msg = face_pipeline.process_live_frame(content, model=backbone)
+    
+    if emb_numpy is None:
+        return {"status": "no_face", "message": msg}
+
+    # Inferensi
+    emb_tensor = torch.tensor(emb_numpy, dtype=torch.float32).unsqueeze(0).to(device)
+    
+    with torch.no_grad():
+        outputs = model_head(emb_tensor)
+        probs = torch.nn.functional.softmax(outputs, dim=1)
+        confidence, predicted_class = torch.max(probs, 1)
+        
+    class_idx = predicted_class.item()
+    softmax_score = confidence.item()
+    
+    # Identify User
+    matched_name = "Unknown"
+    
+    users = db.query(UserLocal).all()
+    matched_user = None
+    for user in users:
+        lbl_data = get_global_label(user.nrp, client_id=CLIENT_ID)
+        if lbl_data and lbl_data.get("label") == class_idx:
+            matched_user = user
+            matched_name = user.name
+            break
+            
+    if not matched_user:
+         return {
+             "status": "unknown", 
+             "box": box.tolist(), 
+             "name": "Unknown (Label Missing)", 
+             "confidence": softmax_score
+         }
+
+    # Verification (Cosine)
+    stored_embeddings = db.query(Embedding).filter(Embedding.user_id == matched_user.user_id).all()
+    max_similarity = -1.0
+    
+    if stored_embeddings:
+        for db_emb in stored_embeddings:
+            try:
+                vec_stored = encryptor.decrypt_embedding(db_emb.encrypted_embedding, db_emb.iv)
+                sim = np.dot(emb_numpy, vec_stored)
+                if sim > max_similarity: max_similarity = sim
+            except: continue
+            
+    final_score = float(max_similarity) if max_similarity != -1.0 else softmax_score
+    THRESHOLD = 0.50
+    
+    if final_score > THRESHOLD:
+        # OPTIONAL: Auto-Attendance Logic here? 
+        # For "Live View", we might not want to spam DB. 
+        # User asked for "Info di Bounding Box". We return the info.
+        return {
+            "status": "match",
+            "box": box.tolist(),
+            "name": matched_name,
+            "confidence": final_score
+        }
+    else:
+         return {
+            "status": "unknown",
+            "box": box.tolist(),
+            "name": "Unknown",
+            "confidence": final_score
+         }
 
 @app.post("/register")
 async def register_user(

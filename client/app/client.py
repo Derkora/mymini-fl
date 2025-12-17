@@ -26,6 +26,8 @@ CLIENT_ID = os.getenv("HOSTNAME", "client-unknown")
 SERVER_URL = "http://server:8080"
 MAX_USERS_CAPACITY = 100
 EMBEDDING_SIZE = 128
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"[CLIENT] Running on device: {DEVICE}")
 
 def get_global_label(nrp: str, name: str = "", client_id: str = ""): # Menambahkan client_id
     try:
@@ -54,7 +56,7 @@ def sync_users_from_server():
                 continue
 
             exists = db.query(UserLocal).filter(UserLocal.nrp == nrp).first()
-                if not exists:
+            if not exists:
                 print(f"[SYNC] Menambahkan user baru: {name}")
                 new_user = UserLocal(name=name, nrp=nrp)
                 db.add(new_user)
@@ -144,6 +146,7 @@ def validate_model(backbone, head, test_loader):
     
     with torch.no_grad():
         for images, labels in test_loader:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
             # Ekstraksi embedding
             embeddings = backbone(images)
             # Klasifikasi dengan head lokal
@@ -169,21 +172,42 @@ def validate_model(backbone, head, test_loader):
     
     return val_loss, accuracy
 
-def train_model(backbone, head, train_loader, val_loader=None, epochs=10, patience=3):
+def train_model(backbone, head, train_loader, val_loader=None, epochs=5, patience=3):
     """Training Backbone + Head Lokal dengan Early Stopping & Scheduler"""
     criterion = nn.CrossEntropyLoss()
     
-    # Menggabungkan parameter dari backbone dan head untuk training bersama
-    all_params = list(backbone.parameters()) + list(head.parameters())
-    optimizer = optim.SGD(all_params, lr=0.01, momentum=0.9, weight_decay=1e-4)
+    # Membekukan 50% parameter awal backbone untuk mengurangi beban komputasi
+    total_layers = len(list(backbone.named_parameters()))
+    freeze_split = int(total_layers * 0.5)
+    
+    for i, (name, param) in enumerate(backbone.named_parameters()):
+        if i < freeze_split:
+            param.requires_grad = False
+        else:
+            param.requires_grad = True # Pastikan layer akhir bisa dilatih
+
+    for module in backbone.modules():
+        if isinstance(module, nn.BatchNorm2d):
+            module.eval() 
+
+    # Optimasi hanya parameter yang requires_grad=True
+    trainable_params = [p for p in backbone.parameters() if p.requires_grad] + list(head.parameters())
+    optimizer = optim.SGD(trainable_params, lr=0.01, momentum=0.9, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
     
-    backbone.train()
+    backbone.to(DEVICE)
+    head.to(DEVICE)
+    backbone.train() 
+    # Force BN back to eval after .train() call
+    for module in backbone.modules():
+        if isinstance(module, nn.BatchNorm2d):
+            module.eval()
+            
     head.train()
     
     best_loss = float('inf')
     patience_counter = 0
-    final_loss = 0.0
+    final_loss = None # Ubah init jadi None
     final_acc = 0.0
     
     # Simpan state awal MobileFaceNet
@@ -195,6 +219,7 @@ def train_model(backbone, head, train_loader, val_loader=None, epochs=10, patien
         total = 0
         
         for images, labels in train_loader:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
             optimizer.zero_grad()
             
             # Forward pass
@@ -224,11 +249,11 @@ def train_model(backbone, head, train_loader, val_loader=None, epochs=10, patien
 
         if current_val_loss < best_loss:
             best_loss = current_val_loss
+            final_loss = epoch_loss
+            final_acc = epoch_acc
             # Hanya simpan state dict dari MobileFaceNet (backbone)
             best_state = backbone.state_dict()
             patience_counter = 0
-            final_loss = epoch_loss
-            final_acc = epoch_acc
         else:
             patience_counter += 1
             
@@ -236,6 +261,11 @@ def train_model(backbone, head, train_loader, val_loader=None, epochs=10, patien
             print(f"[EARLY STOPPING] Berhenti di epoch {epoch+1}")
             break
     
+    # Fallback jika final_loss masih None (tidak pernah improve dari inf)
+    if final_loss is None:
+        final_loss = epoch_loss
+        final_acc = epoch_acc
+
     # Kembalikan bobot terbaik yang ditemukan ke backbone
     backbone.load_state_dict(best_state)
     return final_loss, final_acc
@@ -316,8 +346,8 @@ def load_data_from_db():
             
         train_dataset, test_dataset = random_split(full_dataset, [train_size, test_size])
         
-        train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
-        test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False)
+        train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False)
         
         return train_loader, test_loader
         
@@ -330,12 +360,12 @@ def load_data_from_db():
 class RealClient(fl.client.NumPyClient):
     def __init__(self):
         # Menggunakan MobileFaceNet sebagai model FL (Backbone)
-        self.backbone = MobileFaceNet(embedding_size=EMBEDDING_SIZE) 
+        self.backbone = MobileFaceNet(embedding_size=EMBEDDING_SIZE).to(DEVICE)
         # Head classifier lokal
-        self.local_head = LocalClassifierHead(num_classes=MAX_USERS_CAPACITY)
+        self.local_head = LocalClassifierHead(num_classes=MAX_USERS_CAPACITY).to(DEVICE)
 
     def get_parameters(self, config):
-        return [val.cpu().numpy() for _, val in self.backbone.state_dict().items()]
+        return [val.cpu().numpy().astype(np.float16) for _, val in self.backbone.state_dict().items()]
 
     def fit(self, parameters, config):
         try:

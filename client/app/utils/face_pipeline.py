@@ -100,6 +100,15 @@ class FaceAnalysisPipeline:
     def _detect_and_crop(self, img_pil):
         """Deteksi wajah dan kembalikan Crop Wajah 112x112"""
         try:
+            base_width = 640
+            scale_factor = 1.0
+            
+            if img_pil.width > base_width:
+                scale_factor = base_width / float(img_pil.width)
+                h_size = int((float(img_pil.height) * scale_factor))
+                img_pil = img_pil.resize((base_width, h_size), Image.Resampling.LANCZOS)
+                print(f"[PIPELINE DEBUG] Downscaled input image to {img_pil.size} (Scale: {scale_factor:.2f})")
+
             is_good, msg = self._check_quality(img_pil)
             if not is_good:
                 return None, None, f"Quality Reject: {msg}"
@@ -119,6 +128,10 @@ class FaceAnalysisPipeline:
             # Crop wajah manual
             face_img_pil = img_pil.crop(box.astype(int))
             face_img_pil = face_img_pil.resize((112, 112))
+            
+            # Kembalikan koordinat box ke skala asli agar gambar di UI benar
+            if scale_factor != 1.0:
+                box = box / scale_factor
             
             return face_img_pil, box, "Success"
         except Exception as e:
@@ -163,6 +176,26 @@ class FaceAnalysisPipeline:
         except Exception as e:
             print(f"[DEBUG] Failed to save image: {e}")
             return None
+
+    def process_live_frame(self, image_bytes, model=None):
+        """
+        Untuk endpoint /api/attendance/live (JSON Response).
+        Mengembalikan embedding, box coords, dan pesan.
+        """
+        try:
+            img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+            # Tidak perlu copy jika hanya read
+            
+            # Detect -> Embed
+            face_img_pil, box, msg = self._detect_and_crop(img)
+            
+            if face_img_pil is None:
+                return None, None, msg
+
+            emb = self._get_embedding_from_face(face_img_pil, model=model)
+            return emb, box, msg
+        except Exception as e:
+            return None, None, str(e)
 
     def process_image(self, image_bytes, model=None):
         """
