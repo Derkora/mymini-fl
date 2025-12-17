@@ -40,41 +40,48 @@ def get_global_label(nrp: str, name: str = "", client_id: str = ""): # Menambahk
     return None
 
 def sync_users_from_server():
-    print("[SYNC] Memulai sinkronisasi user dari Server...")
-    try:
-        response = requests.get(f"{SERVER_URL}/api/training/global_users", timeout=5)
-        if response.status_code != 200:
-            return
-        
-        global_users = response.json() 
-        db = SessionLocal()
-        for u_data in global_users:
-            nrp = u_data['nrp']
-            name = u_data['name']
-            
-            if u_data.get('registered_edge_id') and u_data.get('registered_edge_id') != CLIENT_ID:
-                continue
+    print("[SYNC] Service Sinkronisasi User Berjalan (Setiap 30 detik)...")
+    while True:
+        try:
+            # print("[SYNC] Mengecek update user dari server...")
+            response = requests.get(f"{SERVER_URL}/api/training/global_users", timeout=5)
+            if response.status_code == 200:
+                global_users = response.json() 
+                db = SessionLocal()
+                
+                # Tambah User Baru
+                for u_data in global_users:
+                    nrp = u_data['nrp']
+                    name = u_data['name']
+                    
+                    if u_data.get('registered_edge_id') and u_data.get('registered_edge_id') != CLIENT_ID:
+                        # Skip user yang terdaftar di edge lain
+                        continue
 
-            exists = db.query(UserLocal).filter(UserLocal.nrp == nrp).first()
-            if not exists:
-                print(f"[SYNC] Menambahkan user baru: {name}")
-                new_user = UserLocal(name=name, nrp=nrp)
-                db.add(new_user)
-        
-        valid_nrps = {u['nrp'] for u in global_users}
-        local_users = db.query(UserLocal).all()
-        
-        for lu in local_users:
-            if lu.nrp not in valid_nrps:
-                print(f"[SYNC] Menghapus user lokal {lu.name} ({lu.nrp}) karena tidak ada di server.")
-                db.query(Embedding).filter(Embedding.user_id == lu.user_id).delete()
-                db.delete(lu)
-        
-        db.commit()
-        db.close()
-        print("[SYNC] Sinkronisasi Selesai.")
-    except Exception as e:
-        print(f"[SYNC FAILED] {e}")
+                    exists = db.query(UserLocal).filter(UserLocal.nrp == nrp).first()
+                    if not exists:
+                        print(f"[SYNC] Menambahkan user baru dari server: {name}")
+                        new_user = UserLocal(name=name, nrp=nrp)
+                        db.add(new_user)
+                
+                if len(global_users) > 0: 
+                    valid_nrps = {u['nrp'] for u in global_users}
+                    
+                    local_users = db.query(UserLocal).all()
+                    
+                    for lu in local_users:
+                        if lu.nrp not in valid_nrps:
+                            print(f"[SYNC] Menghapus user lokal {lu.name} ({lu.nrp}) karena telah dihapus di server.")
+                            db.query(Embedding).filter(Embedding.user_id == lu.user_id).delete()
+                            db.delete(lu)
+                
+                db.commit()
+                db.close()
+            
+        except Exception as e:
+            print(f"[SYNC FAILED] {e}")
+            
+        time.sleep(30) # Cek setiap 30 detik
         
 
 CURRENT_RESET_COUNTER = -1 # Inisialisasi awal
@@ -192,7 +199,8 @@ def train_model(backbone, head, train_loader, val_loader=None, epochs=5, patienc
 
     # Optimasi hanya parameter yang requires_grad=True
     trainable_params = [p for p in backbone.parameters() if p.requires_grad] + list(head.parameters())
-    optimizer = optim.SGD(trainable_params, lr=0.01, momentum=0.9, weight_decay=1e-4)
+    # LR diturunkan sangat kecil untuk mencegah NaN/Exploding Gradient pada awal training
+    optimizer = optim.SGD(trainable_params, lr=0.0001, momentum=0.9, weight_decay=1e-4) # 0.001 -> 0.0001
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
     
     backbone.to(DEVICE)
@@ -207,7 +215,7 @@ def train_model(backbone, head, train_loader, val_loader=None, epochs=5, patienc
     
     best_loss = float('inf')
     patience_counter = 0
-    final_loss = None # Ubah init jadi None
+    final_loss = None 
     final_acc = 0.0
     
     # Simpan state awal MobileFaceNet
@@ -227,7 +235,16 @@ def train_model(backbone, head, train_loader, val_loader=None, epochs=5, patienc
             output = head(embeddings)
 
             loss = criterion(output, labels)
+            
+            if torch.isnan(loss):
+                print(f"[TRAIN ERROR] NaN Loss detected at Epoch {epoch+1}!")
+                continue
+
             loss.backward()
+            
+            # Gradient Clipping untuk mencegah Exploding Gradient
+            torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=5.0)
+            
             optimizer.step()
             
             running_loss += loss.item()
@@ -237,8 +254,11 @@ def train_model(backbone, head, train_loader, val_loader=None, epochs=5, patienc
         
         scheduler.step()
         
-        epoch_loss = running_loss / len(train_loader) if len(train_loader) > 0 else 0
-        epoch_acc = correct / total if total > 0 else 0
+        epoch_loss = running_loss / len(train_loader) if len(train_loader) > 0 else 0.0
+        epoch_loss = float(epoch_loss) # Ensure standard float
+        epoch_acc = correct / total if total > 0 else 0.0
+        
+        print(f"[CLIENT TRAIN] Epoch {epoch+1}/{epochs} - Loss: {epoch_loss:.4f} - Acc: {epoch_acc:.1%}")
         
         current_val_loss = epoch_loss
         if val_loader:
@@ -317,8 +337,13 @@ def load_data_from_db():
                      
                      # Ensure the user_id exists in user_to_label and get the global label
                      if emb.user_id in user_to_label:
+                         lbl = user_to_label[emb.user_id]
+                         if lbl >= MAX_USERS_CAPACITY:
+                             print(f"[DATA WARNING] Skip User {emb.user_id}: Label {lbl} >= Max Capacity {MAX_USERS_CAPACITY}")
+                             continue
+                             
                          X_list.append(img_tensor.numpy()) # Append as numpy for now, later stacked
-                         y_list.append(user_to_label[emb.user_id]) # Gunakan label global
+                         y_list.append(lbl) # Gunakan label global
                      else:
                          print(f"[DATA] Skip sample {emb.embedding_id}: User {emb.user_id} not found in global labels. Available users: {list(user_to_label.keys())[:5]}...")
                          continue
