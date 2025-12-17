@@ -39,6 +39,12 @@ async def dashboard(request: Request):
         "status": current_status
     })
 
+@app.get("/users")
+async def user_management(request: Request):
+    return templates.TemplateResponse("users.html", {
+        "request": request
+    })
+
 @app.post("/action/start")
 async def action_start_training():
     # Panggil logic start 

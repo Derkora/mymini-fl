@@ -51,6 +51,16 @@ def get_or_create_label(req: LabelRequest):
 def get_all_users():
     return list(global_user_db.values())
 
+@router.delete("/users/{nrp}")
+def delete_user(nrp: str):
+    global global_user_db
+    if nrp not in global_user_db:
+        raise HTTPException(status_code=404, detail="User found")
+    
+    del global_user_db[nrp]
+    print(f"[REGISTRY] User deleted: {nrp}")
+    return {"status": "success", "message": f"User {nrp} deleted"}
+
 @router.post("/start")
 async def start_training(rounds: int = 10):
     fl_manager.start_training(rounds)

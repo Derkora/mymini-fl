@@ -54,10 +54,20 @@ def sync_users_from_server():
                 continue
 
             exists = db.query(UserLocal).filter(UserLocal.nrp == nrp).first()
-            if not exists:
+                if not exists:
                 print(f"[SYNC] Menambahkan user baru: {name}")
                 new_user = UserLocal(name=name, nrp=nrp)
                 db.add(new_user)
+        
+        valid_nrps = {u['nrp'] for u in global_users}
+        local_users = db.query(UserLocal).all()
+        
+        for lu in local_users:
+            if lu.nrp not in valid_nrps:
+                print(f"[SYNC] Menghapus user lokal {lu.name} ({lu.nrp}) karena tidak ada di server.")
+                db.query(Embedding).filter(Embedding.user_id == lu.user_id).delete()
+                db.delete(lu)
+        
         db.commit()
         db.close()
         print("[SYNC] Sinkronisasi Selesai.")
